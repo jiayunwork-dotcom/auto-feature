@@ -1,4 +1,9 @@
-const BASE_URL = "http://localhost:8000/api";
+const BASE_URL = "/api";
+
+export function getWebSocketUrl(path: string): string {
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  return `${protocol}//${window.location.host}${path}`;
+}
 
 async function request<T>(
   endpoint: string,

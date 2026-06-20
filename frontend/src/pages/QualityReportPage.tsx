@@ -10,7 +10,7 @@ import type {
   UniquenessColumn,
   CorrelationPair,
 } from "@/utils/api";
-import { getLatestQualityReport } from "@/utils/api";
+import { getLatestQualityReport, getWebSocketUrl } from "@/utils/api";
 import {
   FileWarning,
   AlertTriangle,
@@ -379,7 +379,7 @@ export default function QualityReportPage() {
   useEffect(() => {
     if (!taskId) return;
 
-    const ws = new WebSocket(`ws://localhost:8000/ws/quality-report/${taskId}`);
+    const ws = new WebSocket(getWebSocketUrl(`/ws/quality-report/${taskId}`));
     wsRef.current = ws;
 
     ws.onmessage = (event) => {

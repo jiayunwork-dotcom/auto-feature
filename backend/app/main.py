@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.routes import router as api_router
 from app.core.config import settings
 from app.core.database import close_db, init_db
+from app.models import models  # noqa: F401 - ensure all models are loaded into Base.metadata
 
 app = FastAPI(title="AutoFeature", version="1.0.0")
 

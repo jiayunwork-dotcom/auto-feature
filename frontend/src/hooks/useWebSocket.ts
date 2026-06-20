@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
+import { getWebSocketUrl } from "@/utils/api";
 
 interface UseWebSocketOptions {
   onMessage?: (data: unknown) => void;
@@ -24,7 +25,7 @@ export function useWebSocket(
   const connect = useCallback(() => {
     if (!taskId) return;
 
-    const ws = new WebSocket(`ws://localhost:8000/ws/tasks/${taskId}`);
+    const ws = new WebSocket(getWebSocketUrl(`/ws/tasks/${taskId}`));
     wsRef.current = ws;
 
     ws.onopen = () => {

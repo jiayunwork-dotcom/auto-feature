@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { getDriftComparison } from "@/utils/api";
+import { getDriftComparison, getWebSocketUrl } from "@/utils/api";
 import type { DriftComparison as DriftCompType, ColumnDriftResult, DriftWSMessage } from "@/utils/api";
 import { useTaskStore } from "@/stores/taskStore";
 import EChartsWrapper from "@/components/EChartsWrapper";
@@ -244,7 +244,7 @@ export default function DriftComparisonPage() {
   useEffect(() => {
     if (!comparisonId) return;
 
-    const ws = new WebSocket(`ws://localhost:8000/ws/drift-comparison/${comparisonId}`);
+    const ws = new WebSocket(getWebSocketUrl(`/ws/drift-comparison/${comparisonId}`));
     wsRef.current = ws;
 
     ws.onmessage = (event) => {
