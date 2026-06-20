@@ -13,6 +13,7 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./backend/migrations/001_init.sql:/docker-entrypoint-initdb.d/001_init.sql
       - ./backend/migrations/002_data_versioning.sql:/docker-entrypoint-initdb.d/002_data_versioning.sql
+      - ./backend/migrations/003_auto_compare_and_report.sql:/docker-entrypoint-initdb.d/003_auto_compare_and_report.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U autofeature"]
       interval: 5s
