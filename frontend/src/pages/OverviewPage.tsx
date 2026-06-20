@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { getOverview, updateInference, setTarget, generateQualityReport, getLatestQualityReport } from "@/utils/api";
+import { getOverview, updateInference, setTarget, generateQualityReport, getLatestQualityReport, getLatestDriftWarning, acknowledgeDriftWarning } from "@/utils/api";
 import { useTaskStore } from "@/stores/taskStore";
-import type { ColumnInference, QualityReport } from "@/utils/api";
+import type { ColumnInference, QualityReport, DriftWarning } from "@/utils/api";
 import EChartsWrapper from "@/components/EChartsWrapper";
 import StepProgress from "@/components/StepProgress";
 import {
@@ -17,6 +17,9 @@ import {
   ChevronRight,
   Target,
   FileBarChart,
+  AlertTriangle,
+  Check,
+  ExternalLink,
 } from "lucide-react";
 
 export default function OverviewPage() {
@@ -33,6 +36,8 @@ export default function OverviewPage() {
   const updateColumnInference = useTaskStore((s) => s.updateColumnInference);
   const [generatingReport, setGeneratingReport] = useState(false);
   const [latestReport, setLatestReport] = useState<QualityReport | null>(null);
+  const [latestWarning, setLatestWarning] = useState<DriftWarning | null>(null);
+  const [acknowledging, setAcknowledging] = useState(false);
 
   useEffect(() => {
     if (!taskId) return;
@@ -52,7 +57,28 @@ export default function OverviewPage() {
         if (res.report) setLatestReport(res.report);
       })
       .catch(() => {});
+
+    getLatestDriftWarning(taskId)
+      .then((res) => {
+        if (res.warning && res.warning.is_active) {
+          setLatestWarning(res.warning);
+        }
+      })
+      .catch(() => {});
   }, [taskId, setInference, setTargetColumn]);
+
+  const handleAcknowledgeWarning = async () => {
+    if (!taskId || !latestWarning) return;
+    setAcknowledging(true);
+    try {
+      await acknowledgeDriftWarning(taskId, latestWarning.id);
+      setLatestWarning(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to acknowledge");
+    } finally {
+      setAcknowledging(false);
+    }
+  };
 
   const handleTypeChange = (colName: string, newType: ColumnInference["inferred_type"]) => {
     updateColumnInference(colName, newType);
@@ -122,6 +148,49 @@ export default function OverviewPage() {
   return (
     <div className="animate-fade-in space-y-6">
       <StepProgress />
+
+      {latestWarning && (
+        <div
+          className="rounded-xl border p-4 flex items-center gap-3"
+          style={{
+            backgroundColor: "rgba(239, 68, 68, 0.08)",
+            borderColor: "rgba(239, 68, 68, 0.4)",
+          }}
+        >
+          <AlertTriangle size={24} className="text-red-400 flex-shrink-0" />
+          <div className="flex-1">
+            <p className="text-red-300 font-medium">
+              {latestWarning.warning_message}
+              {latestWarning.drift_ratio !== null && (
+                <span className="ml-2 text-red-400">
+                  （漂移比例 {(latestWarning.drift_ratio * 100).toFixed(1)}%）
+                </span>
+              )}
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => navigate(`/drift-comparison/${taskId}/${latestWarning.comparison_id}`)}
+              className="btn-secondary flex items-center gap-1 py-1.5 px-3 text-xs text-red-300 border-red-500/40 hover:border-red-400 hover:text-red-200"
+            >
+              <ExternalLink size={12} />
+              查看详情
+            </button>
+            <button
+              onClick={handleAcknowledgeWarning}
+              disabled={acknowledging}
+              className="btn-primary flex items-center gap-1 py-1.5 px-3 text-xs"
+            >
+              {acknowledging ? (
+                <Loader2 size={12} className="animate-spin" />
+              ) : (
+                <Check size={12} />
+              )}
+              已确认
+            </button>
+          </div>
+        </div>
+      )}
 
       <h2 className="text-2xl font-bold text-white">Data Overview</h2>
 

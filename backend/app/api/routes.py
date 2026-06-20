@@ -8,6 +8,7 @@ from app.api.ensemble import router as ensemble_router
 from app.api.explainability import router as explainability_router
 from app.api.pipeline import router as pipeline_router
 from app.api.quality_report import router as quality_report_router
+from app.api.data_versioning import router as data_versioning_router
 
 router = APIRouter()
 
@@ -19,3 +20,4 @@ router.include_router(ensemble_router, tags=["ensemble"])
 router.include_router(explainability_router, tags=["explainability"])
 router.include_router(pipeline_router, tags=["pipeline"])
 router.include_router(quality_report_router, tags=["quality-report"])
+router.include_router(data_versioning_router, tags=["data-versioning"])

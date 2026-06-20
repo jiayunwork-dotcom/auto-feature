@@ -11,6 +11,9 @@ import type {
   PipelineInfo,
   ColumnInference,
   QualityReportData,
+  DatasetVersion,
+  DriftComparison,
+  DriftWarning,
 } from "@/utils/api";
 
 export type StepStatus =
@@ -23,6 +26,7 @@ export type StepStatus =
 export type StepKey =
   | "upload"
   | "overview"
+  | "versioning"
   | "feature_engineering"
   | "feature_selection"
   | "model_search"
@@ -62,6 +66,13 @@ interface TaskState {
   qualityReportProgress: number;
   qualityReportStage: string;
 
+  datasetVersions: DatasetVersion[] | null;
+  driftComparisons: DriftComparison[] | null;
+  driftWarnings: DriftWarning[] | null;
+  latestDriftWarning: DriftWarning | null;
+  driftComparisonProgress: number;
+  driftComparisonStage: string;
+
   setTaskId: (id: string | null) => void;
   setTaskStatus: (status: StepStatus) => void;
   setStep: (step: StepKey) => void;
@@ -85,6 +96,12 @@ interface TaskState {
   setQualityReportStatus: (status: StepStatus) => void;
   setQualityReportProgress: (progress: number) => void;
   setQualityReportStage: (stage: string) => void;
+  setDatasetVersions: (data: DatasetVersion[] | null) => void;
+  setDriftComparisons: (data: DriftComparison[] | null) => void;
+  setDriftWarnings: (data: DriftWarning[] | null) => void;
+  setLatestDriftWarning: (data: DriftWarning | null) => void;
+  setDriftComparisonProgress: (progress: number) => void;
+  setDriftComparisonStage: (stage: string) => void;
   reset: () => void;
 }
 
@@ -111,6 +128,12 @@ const initialState = {
   qualityReportStatus: "idle" as StepStatus,
   qualityReportProgress: 0,
   qualityReportStage: "",
+  datasetVersions: null,
+  driftComparisons: null,
+  driftWarnings: null,
+  latestDriftWarning: null,
+  driftComparisonProgress: 0,
+  driftComparisonStage: "",
 };
 
 export const useTaskStore = create<TaskState>((set) => ({
@@ -155,5 +178,11 @@ export const useTaskStore = create<TaskState>((set) => ({
   setQualityReportStatus: (status) => set({ qualityReportStatus: status }),
   setQualityReportProgress: (progress) => set({ qualityReportProgress: progress }),
   setQualityReportStage: (stage) => set({ qualityReportStage: stage }),
+  setDatasetVersions: (data) => set({ datasetVersions: data }),
+  setDriftComparisons: (data) => set({ driftComparisons: data }),
+  setDriftWarnings: (data) => set({ driftWarnings: data }),
+  setLatestDriftWarning: (data) => set({ latestDriftWarning: data }),
+  setDriftComparisonProgress: (progress) => set({ driftComparisonProgress: progress }),
+  setDriftComparisonStage: (stage) => set({ driftComparisonStage: stage }),
   reset: () => set(initialState),
 }));

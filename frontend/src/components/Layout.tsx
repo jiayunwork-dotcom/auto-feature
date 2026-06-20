@@ -3,6 +3,8 @@ import { useTaskStore, type StepKey } from "@/stores/taskStore";
 import {
   Upload,
   BarChart3,
+  GitBranchPlus,
+  AlertTriangle,
   Cog,
   Filter,
   Search,
@@ -14,6 +16,7 @@ import {
 const STEPS: { key: StepKey; label: string; icon: React.ReactNode; path: string }[] = [
   { key: "upload", label: "Upload", icon: <Upload size={18} />, path: "/" },
   { key: "overview", label: "Overview", icon: <BarChart3 size={18} />, path: "/overview" },
+  { key: "versioning", label: "版本管理", icon: <GitBranchPlus size={18} />, path: "/versioning" },
   { key: "feature_engineering", label: "Feature Engineering", icon: <Cog size={18} />, path: "/feature-engineering" },
   { key: "feature_selection", label: "Feature Selection", icon: <Filter size={18} />, path: "/feature-selection" },
   { key: "model_search", label: "Model Search", icon: <Search size={18} />, path: "/model-search" },
@@ -25,6 +28,7 @@ const STEPS: { key: StepKey; label: string; icon: React.ReactNode; path: string 
 const STEP_ORDER: StepKey[] = [
   "upload",
   "overview",
+  "versioning",
   "feature_engineering",
   "feature_selection",
   "model_search",

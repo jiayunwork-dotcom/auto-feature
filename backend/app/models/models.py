@@ -40,6 +40,9 @@ class Task(Base):
     shap_results = relationship("SHAPResult", back_populates="task", cascade="all, delete-orphan")
     pipelines = relationship("Pipeline", back_populates="task", cascade="all, delete-orphan")
     quality_reports = relationship("DataQualityReport", back_populates="task", cascade="all, delete-orphan")
+    dataset_versions = relationship("DatasetVersion", back_populates="task", cascade="all, delete-orphan")
+    drift_comparisons = relationship("DriftComparison", back_populates="task", cascade="all, delete-orphan")
+    drift_warnings = relationship("DriftWarning", back_populates="task", cascade="all, delete-orphan")
 
 
 class ColumnInference(Base):
@@ -147,3 +150,62 @@ class DataQualityReport(Base):
     )
 
     task = relationship("Task", back_populates="quality_reports")
+
+
+class DatasetVersion(Base):
+    __tablename__ = "dataset_versions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    task_id: Mapped[int] = mapped_column(Integer, ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False)
+    version_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    filename: Mapped[str] = mapped_column(String(256), nullable=False)
+    file_path: Mapped[str] = mapped_column(Text, nullable=False)
+    row_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    column_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    file_hash_md5: Mapped[str] = mapped_column(String(32), nullable=False)
+    columns_info: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.datetime.utcnow
+    )
+
+    task = relationship("Task", back_populates="dataset_versions")
+
+
+class DriftComparison(Base):
+    __tablename__ = "drift_comparisons"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    task_id: Mapped[int] = mapped_column(Integer, ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False)
+    version_a_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("dataset_versions.id"), nullable=True)
+    version_b_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("dataset_versions.id"), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    column_results: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    added_columns: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    removed_columns: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    overall_warning: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    significant_drift_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.datetime.utcnow
+    )
+    completed_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    task = relationship("Task", back_populates="drift_comparisons")
+
+
+class DriftWarning(Base):
+    __tablename__ = "drift_warnings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    task_id: Mapped[int] = mapped_column(Integer, ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False)
+    comparison_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("drift_comparisons.id"), nullable=True)
+    warning_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    significant_columns: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    drift_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.datetime.utcnow
+    )
+    acknowledged_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)
+
+    task = relationship("Task", back_populates="drift_warnings")

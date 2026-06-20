@@ -445,3 +445,152 @@ export function getQualityReport(
     `/tasks/${taskId}/quality-report/${reportId}`
   );
 }
+
+export interface DatasetVersion {
+  id: number;
+  task_id: number;
+  version_number: number;
+  filename: string;
+  file_path: string;
+  row_count: number;
+  column_count: number;
+  file_hash_md5: string;
+  columns_info: Record<string, string> | null;
+  created_at: string;
+}
+
+export interface ColumnDriftResult {
+  column_name: string;
+  column_type: string;
+  method: string;
+  statistic: number | null;
+  p_value_or_psi: number | null;
+  verdict: "稳定" | "轻微漂移" | "显著漂移";
+  visualization_data: {
+    type: "density" | "bar";
+    x?: number[];
+    density_a?: number[];
+    density_b?: number[];
+    categories?: string[];
+    counts_a?: number[];
+    counts_b?: number[];
+  } | null;
+}
+
+export interface DriftComparison {
+  id: number;
+  task_id: number;
+  version_a_id: number;
+  version_b_id: number;
+  version_a_number: number | null;
+  version_b_number: number | null;
+  version_a?: DatasetVersion;
+  version_b?: DatasetVersion;
+  status: "pending" | "running" | "completed" | "failed";
+  column_results: ColumnDriftResult[] | null;
+  added_columns: string[] | null;
+  removed_columns: string[] | null;
+  overall_warning: boolean | null;
+  significant_drift_ratio: number | null;
+  created_at: string;
+  completed_at: string | null;
+  error_message: string | null;
+}
+
+export interface DriftWarning {
+  id: number;
+  task_id: number;
+  comparison_id: number;
+  warning_message: string;
+  significant_columns: string[] | null;
+  drift_ratio: number | null;
+  is_active: boolean;
+  created_at: string;
+  acknowledged_at: string | null;
+}
+
+export interface DriftWSMessage {
+  stage: string;
+  progress: number;
+  comparison_id: number;
+  data?: Record<string, unknown>;
+}
+
+export function createDatasetVersion(
+  taskId: string,
+  file: File,
+  onProgress?: (percent: number) => void
+): Promise<DatasetVersion> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `${BASE_URL}/tasks/${taskId}/versions`);
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && onProgress) {
+        onProgress(Math.round((e.loaded / e.total) * 100));
+      }
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          resolve(JSON.parse(xhr.responseText));
+        } catch {
+          reject(new Error("Invalid response"));
+        }
+      } else {
+        try {
+          const err = JSON.parse(xhr.responseText);
+          reject(new Error(err.detail || `Upload failed: ${xhr.status}`));
+        } catch {
+          reject(new Error(`Upload failed: ${xhr.status}`));
+        }
+      }
+    };
+    xhr.onerror = () => reject(new Error("Upload failed"));
+    const formData = new FormData();
+    formData.append("file", file);
+    xhr.send(formData);
+  });
+}
+
+export function getDatasetVersions(taskId: string): Promise<{ versions: DatasetVersion[] }> {
+  return request<{ versions: DatasetVersion[] }>(`/tasks/${taskId}/versions`);
+}
+
+export function deleteDatasetVersion(taskId: string, versionId: number): Promise<{ message: string }> {
+  return request<{ message: string }>(`/tasks/${taskId}/versions/${versionId}`, {
+    method: "DELETE",
+  });
+}
+
+export function startDriftComparison(
+  taskId: string,
+  versionAId: number,
+  versionBId: number
+): Promise<{ comparison_id: number; status: string }> {
+  return request<{ comparison_id: number; status: string }>(`/tasks/${taskId}/compare`, {
+    method: "POST",
+    body: JSON.stringify({ version_a_id: versionAId, version_b_id: versionBId }),
+  });
+}
+
+export function getDriftComparisons(taskId: string): Promise<{ comparisons: DriftComparison[] }> {
+  return request<{ comparisons: DriftComparison[] }>(`/tasks/${taskId}/comparisons`);
+}
+
+export function getDriftComparison(taskId: string, comparisonId: number): Promise<DriftComparison> {
+  return request<DriftComparison>(`/tasks/${taskId}/comparisons/${comparisonId}`);
+}
+
+export function getDriftWarnings(taskId: string): Promise<{ warnings: DriftWarning[] }> {
+  return request<{ warnings: DriftWarning[] }>(`/tasks/${taskId}/warnings`);
+}
+
+export function getLatestDriftWarning(taskId: string): Promise<{ warning: DriftWarning | null }> {
+  return request<{ warning: DriftWarning | null }>(`/tasks/${taskId}/warnings/latest`);
+}
+
+export function acknowledgeDriftWarning(taskId: string, warningId: number): Promise<{ message: string }> {
+  return request<{ message: string }>(`/tasks/${taskId}/warnings/${warningId}/acknowledge`, {
+    method: "POST",
+  });
+}

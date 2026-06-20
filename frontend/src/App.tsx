@@ -2,6 +2,8 @@ import { BrowserRouter as Router, Routes, Route } from "react-router-dom";
 import Layout from "@/components/Layout";
 import UploadPage from "@/pages/UploadPage";
 import OverviewPage from "@/pages/OverviewPage";
+import DataVersioningPage from "@/pages/DataVersioningPage";
+import DriftComparisonPage from "@/pages/DriftComparisonPage";
 import FeatureEngineeringPage from "@/pages/FeatureEngineeringPage";
 import FeatureSelectionPage from "@/pages/FeatureSelectionPage";
 import ModelSearchPage from "@/pages/ModelSearchPage";
@@ -17,6 +19,8 @@ export default function App() {
         <Route element={<Layout />}>
           <Route path="/" element={<UploadPage />} />
           <Route path="/overview/:taskId" element={<OverviewPage />} />
+          <Route path="/versioning/:taskId" element={<DataVersioningPage />} />
+          <Route path="/drift-comparison/:taskId/:comparisonId" element={<DriftComparisonPage />} />
           <Route path="/quality-report/:taskId" element={<QualityReportPage />} />
           <Route path="/feature-engineering/:taskId" element={<FeatureEngineeringPage />} />
           <Route path="/feature-selection/:taskId" element={<FeatureSelectionPage />} />

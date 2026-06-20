@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 import json
 import logging
 import os
@@ -23,6 +24,9 @@ from app.models.models import (
     Pipeline as PipelineModel,
     Task,
     DataQualityReport,
+    DriftComparison,
+    DriftWarning,
+    DatasetVersion,
 )
 from app.tasks.celery_app import celery_app
 
@@ -541,3 +545,108 @@ def quality_report_task(self, task_id: int):
                 report_record.status = "failed"
                 session.commit()
             _publish_report("failed", 0, {"error": str(e)})
+
+
+@celery_app.task(name="app.tasks.drift_comparison.run", bind=True)
+def drift_comparison_task(self, comparison_id: int):
+    engine = _get_sync_engine()
+    with Session(engine) as session:
+        comparison = session.get(DriftComparison, comparison_id)
+        if not comparison:
+            return
+
+        comparison.status = "running"
+        session.commit()
+        session.refresh(comparison)
+
+        task_id = comparison.task_id
+        channel = f"drift_comparison:{comparison_id}"
+
+        def _publish_drift(stage: str, progress: int, data: dict | None = None):
+            try:
+                r = redis.from_url(settings.REDIS_URL)
+                msg = {"stage": stage, "progress": progress, "comparison_id": comparison_id}
+                if data is not None:
+                    msg["data"] = data
+                r.publish(channel, json.dumps(msg))
+                r.close()
+            except Exception:
+                pass
+
+        _publish_drift("started", 0)
+
+        try:
+            version_a = session.get(DatasetVersion, comparison.version_a_id)
+            version_b = session.get(DatasetVersion, comparison.version_b_id)
+
+            if not version_a or not version_b:
+                raise ValueError("Dataset version not found")
+
+            _publish_drift("loading_data", 5)
+
+            df_a = pd.read_csv(version_a.file_path)
+            df_b = pd.read_csv(version_b.file_path)
+
+            columns_info_a = version_a.columns_info or {}
+            columns_info_b = version_b.columns_info or {}
+
+            _publish_drift("comparing", 10)
+
+            def _progress_cb(current: int, total: int):
+                if total > 0:
+                    pct = int(10 + (current / total) * 85)
+                    _publish_drift("comparing", pct, {"current": current, "total": total})
+
+            from app.services.drift_service import compare_versions
+
+            result = compare_versions(
+                df_a, df_b, columns_info_a, columns_info_b, progress_callback=_progress_cb
+            )
+
+            column_results = result["column_results"]
+            added_columns = result["added_columns"]
+            removed_columns = result["removed_columns"]
+
+            common_count = len(column_results)
+            significant_count = sum(1 for r in column_results if r["verdict"] == "显著漂移")
+            significant_drift_ratio = significant_count / common_count if common_count > 0 else 0.0
+            overall_warning = significant_drift_ratio > 0.2
+
+            comparison = session.get(DriftComparison, comparison_id)
+            comparison.column_results = {"columns": column_results}
+            comparison.added_columns = added_columns
+            comparison.removed_columns = removed_columns
+            comparison.significant_drift_ratio = significant_drift_ratio
+            comparison.overall_warning = overall_warning
+
+            if overall_warning:
+                significant_cols = [r["column_name"] for r in column_results if r["verdict"] == "显著漂移"]
+                warning = DriftWarning(
+                    task_id=task_id,
+                    comparison_id=comparison_id,
+                    warning_message="检测到显著数据漂移，建议重新训练模型",
+                    significant_columns=significant_cols,
+                    drift_ratio=significant_drift_ratio,
+                    is_active=True,
+                )
+                session.add(warning)
+
+            comparison.status = "completed"
+            comparison.completed_at = datetime.datetime.utcnow()
+            session.commit()
+
+            _publish_drift("completed", 100, {
+                "significant_drift_ratio": significant_drift_ratio,
+                "overall_warning": overall_warning,
+                "added_columns": added_columns,
+                "removed_columns": removed_columns,
+            })
+
+        except Exception as e:
+            logger.exception(f"Drift comparison failed for comparison {comparison_id}")
+            comparison = session.get(DriftComparison, comparison_id)
+            if comparison:
+                comparison.status = "failed"
+                comparison.error_message = str(e)
+                session.commit()
+            _publish_drift("failed", 0, {"error": str(e)})
