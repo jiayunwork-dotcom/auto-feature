@@ -10,6 +10,7 @@ import type {
   LocalSHAPResult,
   PipelineInfo,
   ColumnInference,
+  QualityReportData,
 } from "@/utils/api";
 
 export type StepStatus =
@@ -56,6 +57,11 @@ interface TaskState {
 
   pipelineInfo: PipelineInfo | null;
 
+  qualityReportData: QualityReportData | null;
+  qualityReportStatus: StepStatus;
+  qualityReportProgress: number;
+  qualityReportStage: string;
+
   setTaskId: (id: string | null) => void;
   setTaskStatus: (status: StepStatus) => void;
   setStep: (step: StepKey) => void;
@@ -75,6 +81,10 @@ interface TaskState {
   setLocalSHAP: (data: LocalSHAPResult | null) => void;
   setExplainabilityStatus: (status: StepStatus) => void;
   setPipelineInfo: (data: PipelineInfo | null) => void;
+  setQualityReportData: (data: QualityReportData | null) => void;
+  setQualityReportStatus: (status: StepStatus) => void;
+  setQualityReportProgress: (progress: number) => void;
+  setQualityReportStage: (stage: string) => void;
   reset: () => void;
 }
 
@@ -97,6 +107,10 @@ const initialState = {
   localSHAP: null,
   explainabilityStatus: "idle" as StepStatus,
   pipelineInfo: null,
+  qualityReportData: null,
+  qualityReportStatus: "idle" as StepStatus,
+  qualityReportProgress: 0,
+  qualityReportStage: "",
 };
 
 export const useTaskStore = create<TaskState>((set) => ({
@@ -137,5 +151,9 @@ export const useTaskStore = create<TaskState>((set) => ({
   setExplainabilityStatus: (status) =>
     set({ explainabilityStatus: status }),
   setPipelineInfo: (data) => set({ pipelineInfo: data }),
+  setQualityReportData: (data) => set({ qualityReportData: data }),
+  setQualityReportStatus: (status) => set({ qualityReportStatus: status }),
+  setQualityReportProgress: (progress) => set({ qualityReportProgress: progress }),
+  setQualityReportStage: (stage) => set({ qualityReportStage: stage }),
   reset: () => set(initialState),
 }));

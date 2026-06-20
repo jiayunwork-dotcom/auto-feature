@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { getOverview, updateInference, setTarget } from "@/utils/api";
+import { getOverview, updateInference, setTarget, generateQualityReport, getLatestQualityReport } from "@/utils/api";
 import { useTaskStore } from "@/stores/taskStore";
-import type { ColumnInference } from "@/utils/api";
+import type { ColumnInference, QualityReport } from "@/utils/api";
 import EChartsWrapper from "@/components/EChartsWrapper";
 import StepProgress from "@/components/StepProgress";
 import {
@@ -16,6 +16,7 @@ import {
   Type,
   ChevronRight,
   Target,
+  FileBarChart,
 } from "lucide-react";
 
 export default function OverviewPage() {
@@ -30,6 +31,8 @@ export default function OverviewPage() {
   const targetColumn = useTaskStore((s) => s.targetColumn);
   const setTargetColumn = useTaskStore((s) => s.setTargetColumn);
   const updateColumnInference = useTaskStore((s) => s.updateColumnInference);
+  const [generatingReport, setGeneratingReport] = useState(false);
+  const [latestReport, setLatestReport] = useState<QualityReport | null>(null);
 
   useEffect(() => {
     if (!taskId) return;
@@ -43,6 +46,12 @@ export default function OverviewPage() {
       })
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
+
+    getLatestQualityReport(taskId)
+      .then((res) => {
+        if (res.report) setLatestReport(res.report);
+      })
+      .catch(() => {});
   }, [taskId, setInference, setTargetColumn]);
 
   const handleTypeChange = (colName: string, newType: ColumnInference["inferred_type"]) => {
@@ -69,6 +78,18 @@ export default function OverviewPage() {
       setError(err instanceof Error ? err.message : "Failed to save");
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleGenerateReport = async () => {
+    if (!taskId) return;
+    setGeneratingReport(true);
+    try {
+      await generateQualityReport(taskId);
+      navigate(`/quality-report/${taskId}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to generate report");
+      setGeneratingReport(false);
     }
   };
 
@@ -260,7 +281,20 @@ export default function OverviewPage() {
         </div>
       )}
 
-      <div className="flex justify-end">
+      <div className="flex items-center justify-between">
+        <button
+          onClick={handleGenerateReport}
+          disabled={generatingReport}
+          className="btn-secondary flex items-center gap-2"
+        >
+          {generatingReport ? (
+            <Loader2 size={16} className="animate-spin" />
+          ) : (
+            <FileBarChart size={16} />
+          )}
+          生成质量报告
+        </button>
+
         <button
           onClick={handleConfirm}
           disabled={saving || !targetColumn}
@@ -274,6 +308,46 @@ export default function OverviewPage() {
           Confirm & Next
         </button>
       </div>
+
+      {latestReport && latestReport.status === "completed" && latestReport.report_data && (
+        <div className="card">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-semibold text-white flex items-center gap-2">
+              <FileBarChart size={18} className="text-emerald-400" />
+              最近质量报告摘要
+            </h3>
+            <button
+              onClick={() => navigate(`/quality-report/${taskId}`)}
+              className="text-sm text-emerald-400 hover:text-emerald-300"
+            >
+              查看完整报告 →
+            </button>
+          </div>
+          <div className="grid grid-cols-5 gap-3">
+            {(() => {
+              const rd = latestReport.report_data!;
+              const missingHighRisk = rd.missing_values.columns.filter((c) => c.risk_level !== "normal").length;
+              const outlierWarnings = rd.outliers.columns.filter((c) => c.warning).length;
+              const consistencyIssues = rd.consistency.columns.filter((c) => c.inconsistency_count > 0).length;
+              const uniquenessFlags = rd.uniqueness.columns.filter((c) => c.category !== "normal").length;
+              const collinearPairs = rd.correlations.pairs.filter((p) => p.is_highly_collinear).length;
+              const items = [
+                { label: "缺失高风险", value: missingHighRisk, color: missingHighRisk > 0 ? "#ef4444" : "#10b981" },
+                { label: "异常值警告", value: outlierWarnings, color: outlierWarnings > 0 ? "#f59e0b" : "#10b981" },
+                { label: "一致性问题", value: consistencyIssues, color: consistencyIssues > 0 ? "#f59e0b" : "#10b981" },
+                { label: "唯一性标记", value: uniquenessFlags, color: uniquenessFlags > 0 ? "#f59e0b" : "#10b981" },
+                { label: "高共线性", value: collinearPairs, color: collinearPairs > 0 ? "#ef4444" : "#10b981" },
+              ];
+              return items.map((item) => (
+                <div key={item.label} className="flex flex-col items-center gap-1 rounded-lg border p-3" style={{ borderColor: item.color + "40" }}>
+                  <p className="font-mono text-xl font-bold" style={{ color: item.color }}>{item.value}</p>
+                  <p className="text-xs text-slate-400">{item.label}</p>
+                </div>
+              ));
+            })()}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

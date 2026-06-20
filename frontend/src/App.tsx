@@ -8,6 +8,7 @@ import ModelSearchPage from "@/pages/ModelSearchPage";
 import EnsemblePage from "@/pages/EnsemblePage";
 import ExplainabilityPage from "@/pages/ExplainabilityPage";
 import PipelinePage from "@/pages/PipelinePage";
+import QualityReportPage from "@/pages/QualityReportPage";
 
 export default function App() {
   return (
@@ -16,6 +17,7 @@ export default function App() {
         <Route element={<Layout />}>
           <Route path="/" element={<UploadPage />} />
           <Route path="/overview/:taskId" element={<OverviewPage />} />
+          <Route path="/quality-report/:taskId" element={<QualityReportPage />} />
           <Route path="/feature-engineering/:taskId" element={<FeatureEngineeringPage />} />
           <Route path="/feature-selection/:taskId" element={<FeatureSelectionPage />} />
           <Route path="/model-search/:taskId" element={<ModelSearchPage />} />

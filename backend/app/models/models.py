@@ -39,6 +39,7 @@ class Task(Base):
     ensemble_results = relationship("EnsembleResult", back_populates="task", cascade="all, delete-orphan")
     shap_results = relationship("SHAPResult", back_populates="task", cascade="all, delete-orphan")
     pipelines = relationship("Pipeline", back_populates="task", cascade="all, delete-orphan")
+    quality_reports = relationship("DataQualityReport", back_populates="task", cascade="all, delete-orphan")
 
 
 class ColumnInference(Base):
@@ -132,3 +133,17 @@ class Pipeline(Base):
     )
 
     task = relationship("Task", back_populates="pipelines")
+
+
+class DataQualityReport(Base):
+    __tablename__ = "data_quality_reports"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    task_id: Mapped[int] = mapped_column(Integer, ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    report_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.datetime.utcnow
+    )
+
+    task = relationship("Task", back_populates="quality_reports")

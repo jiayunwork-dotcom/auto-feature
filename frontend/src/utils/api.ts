@@ -146,6 +146,104 @@ export interface PipelineInfo {
   file_size: number;
 }
 
+export interface MissingValueColumn {
+  column: string;
+  missing_count: number;
+  missing_ratio: number;
+  risk_level: "normal" | "high_risk" | "suggest_delete";
+  suggestion: string | null;
+}
+
+export interface CorrelatedMissingGroup {
+  columns: string[];
+  missing_count: number;
+  label: string;
+}
+
+export interface MissingValuesResult {
+  columns: MissingValueColumn[];
+  correlated_groups: CorrelatedMissingGroup[];
+}
+
+export interface OutlierColumn {
+  column: string;
+  outlier_count: number;
+  outlier_ratio: number;
+  q1: number | null;
+  q3: number | null;
+  iqr: number | null;
+  lower_bound: number | null;
+  upper_bound: number | null;
+  warning: boolean;
+}
+
+export interface OutliersResult {
+  columns: OutlierColumn[];
+}
+
+export interface ConsistencyIssue {
+  type: string;
+  values: string[];
+  description: string;
+}
+
+export interface ConsistencyColumn {
+  column: string;
+  inconsistency_count: number;
+  issues: ConsistencyIssue[];
+}
+
+export interface ConsistencyResult {
+  columns: ConsistencyColumn[];
+}
+
+export interface UniquenessColumn {
+  column: string;
+  unique_count: number;
+  unique_ratio: number;
+  category: "normal" | "suspected_id" | "constant";
+  suggestion: string | null;
+}
+
+export interface UniquenessResult {
+  columns: UniquenessColumn[];
+}
+
+export interface CorrelationPair {
+  column_a: string;
+  column_b: string;
+  correlation: number;
+  is_highly_collinear: boolean;
+  suggestion: string | null;
+}
+
+export interface CorrelationsResult {
+  pairs: CorrelationPair[];
+}
+
+export interface QualityReportData {
+  missing_values: MissingValuesResult;
+  outliers: OutliersResult;
+  consistency: ConsistencyResult;
+  uniqueness: UniquenessResult;
+  correlations: CorrelationsResult;
+}
+
+export interface QualityReport {
+  id: number;
+  task_id: number;
+  status: string;
+  report_data: QualityReportData | null;
+  created_at: string | null;
+}
+
+export interface QualityReportWSMessage {
+  stage: string;
+  progress: number;
+  report_id?: number;
+  data?: Partial<QualityReportData> | { error: string };
+}
+
 export async function uploadFile(
   file: File,
   onProgress?: (percent: number) => void
@@ -320,4 +418,30 @@ export function predict(
     if (!res.ok) throw new Error(`Prediction failed: ${res.status}`);
     return res.json();
   });
+}
+
+export function generateQualityReport(
+  taskId: string
+): Promise<{ status: string; task_id: number }> {
+  return request<{ status: string; task_id: number }>(
+    `/tasks/${taskId}/quality-report`,
+    { method: "POST" }
+  );
+}
+
+export function getLatestQualityReport(
+  taskId: string
+): Promise<{ report: QualityReport | null }> {
+  return request<{ report: QualityReport | null }>(
+    `/tasks/${taskId}/quality-report/latest`
+  );
+}
+
+export function getQualityReport(
+  taskId: string,
+  reportId: number
+): Promise<QualityReport> {
+  return request<QualityReport>(
+    `/tasks/${taskId}/quality-report/${reportId}`
+  );
 }

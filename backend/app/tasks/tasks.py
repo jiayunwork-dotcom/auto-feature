@@ -22,6 +22,7 @@ from app.models.models import (
     SHAPResult,
     Pipeline as PipelineModel,
     Task,
+    DataQualityReport,
 )
 from app.tasks.celery_app import celery_app
 
@@ -443,3 +444,100 @@ def explainability_task(self, task_id: int):
             task.status = "explainability_failed"
             session.commit()
             _publish(task_id, "explainability", "failed", detail={"error": str(e)})
+
+
+@celery_app.task(name="app.tasks.quality_report.run", bind=True)
+def quality_report_task(self, task_id: int):
+    engine = _get_sync_engine()
+    with Session(engine) as session:
+        task = session.get(Task, task_id)
+        if not task:
+            return
+
+        report_record = DataQualityReport(
+            task_id=task_id,
+            status="running",
+        )
+        session.add(report_record)
+        session.commit()
+        session.refresh(report_record)
+
+        report_id = report_record.id
+        channel = f"quality_report:{task_id}"
+
+        def _publish_report(stage: str, progress: int, data: dict | None = None):
+            try:
+                r = redis.from_url(settings.REDIS_URL)
+                msg = {"stage": stage, "progress": progress, "report_id": report_id}
+                if data is not None:
+                    msg["data"] = data
+                r.publish(channel, json.dumps(msg))
+                r.close()
+            except Exception:
+                pass
+
+        _publish_report("started", 0)
+
+        try:
+            df = _load_dataframe(task)
+            cols = session.query(ColumnInference).filter(
+                ColumnInference.task_id == task_id
+            ).all()
+            column_types = _get_column_types(cols)
+
+            from app.services.quality_report_service import (
+                analyze_missing_values,
+                detect_outliers,
+                check_consistency,
+                analyze_uniqueness,
+                compute_correlations,
+            )
+
+            _publish_report("missing_values", 10)
+            missing_result = analyze_missing_values(df)
+
+            _publish_report("missing_values", 20, {"missing_values": missing_result})
+
+            numeric_cols = [col for col in df.columns if column_types.get(col) == "numeric" and pd.api.types.is_numeric_dtype(df[col])]
+            categorical_cols = [col for col in df.columns if column_types.get(col) == "categorical"]
+
+            _publish_report("outliers", 30)
+            outlier_result = detect_outliers(df, numeric_cols)
+
+            _publish_report("outliers", 45, {"outliers": outlier_result})
+
+            _publish_report("consistency", 50)
+            consistency_result = check_consistency(df, categorical_cols)
+
+            _publish_report("consistency", 65, {"consistency": consistency_result})
+
+            _publish_report("uniqueness", 70)
+            uniqueness_result = analyze_uniqueness(df)
+
+            _publish_report("uniqueness", 80, {"uniqueness": uniqueness_result})
+
+            _publish_report("correlations", 85)
+            correlation_result = compute_correlations(df, numeric_cols)
+
+            report_data = {
+                "missing_values": missing_result,
+                "outliers": outlier_result,
+                "consistency": consistency_result,
+                "uniqueness": uniqueness_result,
+                "correlations": correlation_result,
+            }
+
+            report_record = session.get(DataQualityReport, report_id)
+            report_record.report_data = report_data
+            report_record.status = "completed"
+            session.commit()
+
+            _publish_report("completed", 100, report_data)
+
+        except Exception as e:
+            logger.exception(f"Quality report generation failed for task {task_id}")
+            report_record = session.get(DataQualityReport, report_id)
+            if report_record:
+                report_record.status = "failed"
+                session.commit()
+            _publish_report("failed", 0, {"error": str(e)})
