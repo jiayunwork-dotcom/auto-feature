@@ -1,0 +1,85 @@
+version: "3.8"
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: autofeature
+      POSTGRES_PASSWORD: autofeature
+      POSTGRES_DB: autofeature
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backend/migrations/001_init.sql:/docker-entrypoint-initdb.d/001_init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U autofeature"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://autofeature:autofeature@db:5432/autofeature
+      REDIS_URL: redis://redis:6379/0
+      UPLOAD_DIR: /app/uploads
+      PIPELINE_DIR: /app/pipelines
+    volumes:
+      - uploads_data:/app/uploads
+      - pipelines_data:/app/pipelines
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  celery-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: celery -A app.tasks.celery_app worker --loglevel=info --concurrency=2
+    environment:
+      DATABASE_URL: postgresql+asyncpg://autofeature:autofeature@db:5432/autofeature
+      REDIS_URL: redis://redis:6379/0
+      UPLOAD_DIR: /app/uploads
+      PIPELINE_DIR: /app/pipelines
+    volumes:
+      - uploads_data:/app/uploads
+      - pipelines_data:/app/pipelines
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
+  redis_data:
+  uploads_data:
+  pipelines_data:
