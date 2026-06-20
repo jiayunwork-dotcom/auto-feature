@@ -35,13 +35,7 @@ def _infer_single_column(series: pd.Series, n_rows: int) -> str:
     nunique = series.nunique()
     categorical_threshold = max(int(0.05 * n_rows), 50)
 
-    datetime_count = 0
-    for val in sample.head(min(100, len(sample))):
-        val_str = str(val)
-        if _is_datetime_string(val_str):
-            datetime_count += 1
-
-    if datetime_count / min(100, len(sample)) > 0.7:
+    if _is_datetime_column(sample, n_rows):
         return "datetime"
 
     if nunique <= categorical_threshold:
@@ -54,21 +48,52 @@ def _infer_single_column(series: pd.Series, n_rows: int) -> str:
     return "categorical"
 
 
+def _is_datetime_column(sample: pd.Series, n_rows: int) -> bool:
+    if len(sample) == 0:
+        return False
+
+    try:
+        converted = pd.to_datetime(sample, errors="coerce")
+        valid_count = converted.notna().sum()
+        total_count = len(sample)
+        if total_count > 0 and (valid_count / total_count) >= 0.8:
+            return True
+    except (ValueError, TypeError, OverflowError):
+        pass
+
+    datetime_count = 0
+    sample_size = min(100, len(sample))
+    for val in sample.head(sample_size):
+        val_str = str(val)
+        if _is_datetime_string(val_str):
+            datetime_count += 1
+
+    return sample_size > 0 and (datetime_count / sample_size) > 0.7
+
+
 _DATE_PATTERNS = [
-    re.compile(r"^\d{4}[-/]\d{1,2}[-/]\d{1,2}"),
-    re.compile(r"^\d{1,2}[-/]\d{1,2}[-/]\d{4}"),
-    re.compile(r"^\d{4}年\d{1,2}月\d{1,2}日"),
+    re.compile(r"^\d{4}[-/]\d{1,2}[-/]\d{1,2}(\s+\d{1,2}:\d{2}(:\d{2})?)?$"),
+    re.compile(r"^\d{1,2}[-/]\d{1,2}[-/]\d{4}(\s+\d{1,2}:\d{2}(:\d{2})?)?$"),
+    re.compile(r"^\d{4}年\d{1,2}月\d{1,2}日$"),
+    re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:?\d{2})?$"),
 ]
 
 
 def _is_datetime_string(s: str) -> bool:
+    s = s.strip()
+    if not s:
+        return False
+
     for pattern in _DATE_PATTERNS:
         if pattern.match(s):
             return True
+
     try:
-        pd.to_datetime(s)
+        result = pd.to_datetime(s, errors="raise")
+        if pd.isna(result):
+            return False
         return True
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, OverflowError):
         return False
 
 

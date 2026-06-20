@@ -1,6 +1,7 @@
 import os
 import uuid
 
+import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -46,8 +47,6 @@ async def upload_file(file: UploadFile = File(...), db: AsyncSession = Depends(g
     save_path = os.path.join(settings.UPLOAD_DIR, f"{file_id}{ext}")
     with open(save_path, "wb") as f:
         f.write(content)
-
-    import pandas as pd
 
     try:
         if ext == ".csv":
@@ -151,8 +150,6 @@ async def set_target(task_id: int, body: TargetRequest, db: AsyncSession = Depen
     if not target_col:
         raise HTTPException(status_code=404, detail="Target column not found in inference results")
 
-    import pandas as pd
-
     file_path = _get_task_file_path(task)
     df = _load_dataframe(file_path)
 
@@ -179,28 +176,34 @@ async def get_overview(task_id: int, db: AsyncSession = Depends(get_db)):
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
 
+    result = await db.execute(select(ColumnInference).where(ColumnInference.task_id == task_id))
+    columns = result.scalars().all()
+    col_types = {c.column_name: c.confirmed_type or c.inferred_type for c in columns}
+
     file_path = _get_task_file_path(task)
     df = _load_dataframe(file_path)
 
-    type_counts = {}
+    type_counts = {"numeric": 0, "categorical": 0, "datetime": 0, "text": 0}
     for col in df.columns:
-        dtype_str = str(df[col].dtype)
-        category = "numeric" if "int" in dtype_str or "float" in dtype_str else "categorical"
-        type_counts[category] = type_counts.get(category, 0) + 1
+        t = col_types.get(col)
+        if t in type_counts:
+            type_counts[t] += 1
 
     missing = df.isnull().sum()
     missing_top10 = missing[missing > 0].sort_values(ascending=False).head(10).to_dict()
     missing_top10 = {k: float(v) for k, v in missing_top10.items()}
 
     numeric_histograms = {}
-    for col in df.select_dtypes(include="number").columns:
+    numeric_cols = [col for col, t in col_types.items() if t == "numeric" and pd.api.types.is_numeric_dtype(df[col])]
+    for col in numeric_cols[:20]:
         series = df[col].dropna()
         if len(series) > 0:
             hist, bin_edges = _compute_histogram(series)
             numeric_histograms[col] = {"bins": bin_edges, "counts": hist}
 
     categorical_top5 = {}
-    for col in df.select_dtypes(exclude="number").columns:
+    categorical_cols = [col for col, t in col_types.items() if t == "categorical"]
+    for col in categorical_cols:
         value_counts = df[col].value_counts().head(5)
         categorical_top5[col] = {str(k): int(v) for k, v in value_counts.items()}
 
@@ -225,8 +228,6 @@ def _get_task_file_path(task: Task) -> str:
 
 
 def _load_dataframe(file_path: str):
-    import pandas as pd
-
     if file_path.endswith(".parquet"):
         return pd.read_parquet(file_path)
     return pd.read_csv(file_path)
@@ -237,4 +238,5 @@ def _compute_histogram(series, bins=20):
 
     values = series.values
     counts, bin_edges = np.histogram(values, bins=bins)
-    return counts.tolist(), bin_edges.tolist()
+    bin_edges_rounded = [round(float(x), 2) for x in bin_edges]
+    return counts.tolist(), bin_edges_rounded
