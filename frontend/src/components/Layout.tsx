@@ -11,6 +11,7 @@ import {
   Layers,
   Brain,
   Download,
+  GitBranch,
 } from "lucide-react";
 
 const STEPS: { key: StepKey; label: string; icon: React.ReactNode; path: string }[] = [
@@ -23,6 +24,7 @@ const STEPS: { key: StepKey; label: string; icon: React.ReactNode; path: string 
   { key: "ensemble", label: "Ensemble", icon: <Layers size={18} />, path: "/ensemble" },
   { key: "explainability", label: "Explainability", icon: <Brain size={18} />, path: "/explainability" },
   { key: "pipeline", label: "Pipeline", icon: <Download size={18} />, path: "/pipeline" },
+  { key: "attribution", label: "归因报告", icon: <GitBranch size={18} />, path: "/attribution" },
 ];
 
 const STEP_ORDER: StepKey[] = [
@@ -35,6 +37,7 @@ const STEP_ORDER: StepKey[] = [
   "ensemble",
   "explainability",
   "pipeline",
+  "attribution",
 ];
 
 function getStepIndex(step: StepKey): number {

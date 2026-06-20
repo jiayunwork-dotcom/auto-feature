@@ -45,6 +45,7 @@ class Task(Base):
     drift_warnings = relationship("DriftWarning", back_populates="task", cascade="all, delete-orphan")
     auto_compare_strategy = relationship("AutoCompareStrategy", back_populates="task", uselist=False, cascade="all, delete-orphan")
     drift_report_exports = relationship("DriftReportExport", back_populates="task", cascade="all, delete-orphan")
+    feature_attributions = relationship("FeatureAttribution", back_populates="task", cascade="all, delete-orphan")
 
 
 class ColumnInference(Base):
@@ -254,3 +255,21 @@ class DriftReportExport(Base):
 
     task = relationship("Task", back_populates="drift_report_exports")
     comparison = relationship("DriftComparison")
+
+
+class FeatureAttribution(Base):
+    __tablename__ = "feature_attributions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    task_id: Mapped[int] = mapped_column(Integer, ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    shap_values: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    interaction_matrix: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    feature_dag: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.datetime.utcnow
+    )
+    completed_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)
+
+    task = relationship("Task", back_populates="feature_attributions")

@@ -683,3 +683,101 @@ export function getDriftReportExport(taskId: string, exportId: number): Promise<
 export function getDriftReportDownloadUrl(taskId: string, exportId: number): string {
   return `${BASE_URL}/tasks/${taskId}/exports/${exportId}/download`;
 }
+
+export interface SHAPGlobalImportanceItem {
+  feature: string;
+  shap_value: number;
+}
+
+export interface SHAPTopPair {
+  feature_a: string;
+  feature_b: string;
+  strength: number;
+}
+
+export interface SHAPInteractionResult {
+  top_features: string[];
+  matrix: number[][];
+  top_5_pairs: SHAPTopPair[];
+  note?: string;
+  error?: string;
+}
+
+export interface DAGNode {
+  id: string;
+  type: string;
+  label: string;
+  weight?: number;
+}
+
+export interface DAGEdge {
+  source: string;
+  target: string;
+  operation: string;
+  weight?: number;
+}
+
+export interface DAGTreeNode {
+  name: string;
+  type: string;
+  operation?: string;
+  shap_importance?: number;
+  contribution_weight?: number;
+  children?: DAGTreeNode[];
+}
+
+export interface FeatureDAGResult {
+  nodes: DAGNode[];
+  edges: DAGEdge[];
+  tree: Record<string, DAGTreeNode>;
+}
+
+export interface FeatureAttribution {
+  id: number;
+  task_id: number;
+  status: "pending" | "running" | "completed" | "failed";
+  shap_values: {
+    global_importance: SHAPGlobalImportanceItem[];
+    feature_names: string[];
+    sample_count: number;
+    per_feature_mean: Record<string, number>;
+  } | null;
+  interaction_matrix: SHAPInteractionResult | null;
+  feature_dag: FeatureDAGResult | null;
+  error_message: string | null;
+  created_at: string | null;
+  completed_at: string | null;
+}
+
+export interface FeatureAttributionWSMessage {
+  stage: string;
+  progress: number;
+  attribution_id: number;
+  data?: Record<string, unknown> | { error: string };
+}
+
+export function startFeatureAttribution(
+  taskId: string
+): Promise<{ task_id: number; status: string; message: string }> {
+  return request<{ task_id: number; status: string; message: string }>(
+    `/tasks/${taskId}/feature-attribution`,
+    { method: "POST" }
+  );
+}
+
+export function getLatestFeatureAttribution(
+  taskId: string
+): Promise<FeatureAttribution> {
+  return request<FeatureAttribution>(
+    `/tasks/${taskId}/feature-attribution/latest`
+  );
+}
+
+export function getFeatureAttribution(
+  taskId: string,
+  attributionId: number
+): Promise<FeatureAttribution> {
+  return request<FeatureAttribution>(
+    `/tasks/${taskId}/feature-attribution/${attributionId}`
+  );
+}

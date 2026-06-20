@@ -14,6 +14,7 @@ import type {
   DatasetVersion,
   DriftComparison,
   DriftWarning,
+  FeatureAttribution,
 } from "@/utils/api";
 
 export type StepStatus =
@@ -32,7 +33,8 @@ export type StepKey =
   | "model_search"
   | "ensemble"
   | "explainability"
-  | "pipeline";
+  | "pipeline"
+  | "attribution";
 
 interface TaskState {
   taskId: string | null;
@@ -73,6 +75,11 @@ interface TaskState {
   driftComparisonProgress: number;
   driftComparisonStage: string;
 
+  featureAttribution: FeatureAttribution | null;
+  featureAttributionStatus: StepStatus;
+  featureAttributionProgress: number;
+  featureAttributionStage: string;
+
   setTaskId: (id: string | null) => void;
   setTaskStatus: (status: StepStatus) => void;
   setStep: (step: StepKey) => void;
@@ -102,6 +109,10 @@ interface TaskState {
   setLatestDriftWarning: (data: DriftWarning | null) => void;
   setDriftComparisonProgress: (progress: number) => void;
   setDriftComparisonStage: (stage: string) => void;
+  setFeatureAttribution: (data: FeatureAttribution | null) => void;
+  setFeatureAttributionStatus: (status: StepStatus) => void;
+  setFeatureAttributionProgress: (progress: number) => void;
+  setFeatureAttributionStage: (stage: string) => void;
   reset: () => void;
 }
 
@@ -134,6 +145,10 @@ const initialState = {
   latestDriftWarning: null,
   driftComparisonProgress: 0,
   driftComparisonStage: "",
+  featureAttribution: null,
+  featureAttributionStatus: "idle" as StepStatus,
+  featureAttributionProgress: 0,
+  featureAttributionStage: "",
 };
 
 export const useTaskStore = create<TaskState>((set) => ({
@@ -184,5 +199,9 @@ export const useTaskStore = create<TaskState>((set) => ({
   setLatestDriftWarning: (data) => set({ latestDriftWarning: data }),
   setDriftComparisonProgress: (progress) => set({ driftComparisonProgress: progress }),
   setDriftComparisonStage: (stage) => set({ driftComparisonStage: stage }),
+  setFeatureAttribution: (data) => set({ featureAttribution: data }),
+  setFeatureAttributionStatus: (status) => set({ featureAttributionStatus: status }),
+  setFeatureAttributionProgress: (progress) => set({ featureAttributionProgress: progress }),
+  setFeatureAttributionStage: (stage) => set({ featureAttributionStage: stage }),
   reset: () => set(initialState),
 }));

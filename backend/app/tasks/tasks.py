@@ -29,6 +29,7 @@ from app.models.models import (
     DatasetVersion,
     AutoCompareStrategy,
     DriftReportExport,
+    FeatureAttribution,
 )
 from app.services.drift_service import compare_versions
 from app.tasks.celery_app import celery_app
@@ -846,3 +847,376 @@ def trigger_auto_compare_on_upload(task_id: int, new_version_id: int):
         session.refresh(comparison)
 
         drift_comparison_task.delay(comparison.id)
+
+
+def _parse_feature_origin(feature_name: str, original_columns: list[str]) -> dict:
+    for orig_col in original_columns:
+        if feature_name == orig_col:
+            return {"type": "original", "source": orig_col, "parents": [orig_col]}
+
+    for orig_col in original_columns:
+        if feature_name == f"{orig_col}_sq":
+            return {"type": "polynomial_square", "source": orig_col, "parents": [orig_col], "operation": "square"}
+        if feature_name == f"{orig_col}_log1p":
+            return {"type": "log_transform", "source": orig_col, "parents": [orig_col], "operation": "log1p"}
+        if feature_name == f"{orig_col}_zscore":
+            return {"type": "standardization", "source": orig_col, "parents": [orig_col], "operation": "z-score"}
+        if feature_name == f"{orig_col}_target_enc":
+            return {"type": "target_encoding", "source": orig_col, "parents": [orig_col], "operation": "target_encode"}
+        if feature_name == f"{orig_col}_freq":
+            return {"type": "frequency_encoding", "source": orig_col, "parents": [orig_col], "operation": "frequency"}
+        if feature_name.startswith(f"{orig_col}_bin"):
+            return {"type": "binning", "source": orig_col, "parents": [orig_col], "operation": "quantile_bin"}
+        if feature_name in [f"{orig_col}_year", f"{orig_col}_month", f"{orig_col}_day",
+                            f"{orig_col}_dayofweek", f"{orig_col}_is_weekend",
+                            f"{orig_col}_weekofyear", f"{orig_col}_hour", f"{orig_col}_days_from_max"]:
+            part = feature_name[len(orig_col) + 1:]
+            return {"type": "datetime_extract", "source": orig_col, "parents": [orig_col], "operation": f"extract_{part}"}
+        if feature_name.startswith(f"{orig_col}_tfidf_"):
+            return {"type": "tfidf", "source": orig_col, "parents": [orig_col], "operation": "tfidf_vectorizer"}
+        if feature_name.startswith(f"{orig_col}_"):
+            suffix = feature_name[len(orig_col) + 1:]
+            if not any(c.isdigit() for c in suffix) and "_" not in suffix:
+                return {"type": "one_hot", "source": orig_col, "parents": [orig_col], "operation": f"one_hot[{suffix}]"}
+
+    for orig_a in original_columns:
+        for orig_b in original_columns:
+            if orig_a >= orig_b:
+                continue
+            if feature_name == f"{orig_a}_x_{orig_b}":
+                return {"type": "cross_multiply", "source": None, "parents": [orig_a, orig_b], "operation": "multiply"}
+            if feature_name == f"{orig_a}_div_{orig_b}":
+                return {"type": "cross_divide", "source": None, "parents": [orig_a, orig_b], "operation": "divide"}
+
+    return {"type": "unknown", "source": None, "parents": [], "operation": "unknown"}
+
+
+def _build_feature_dag(
+    selected_features: list[str],
+    original_columns: list[str],
+    feature_shap_means: dict[str, float],
+) -> dict:
+    nodes: list[dict] = []
+    edges: list[dict] = []
+    node_ids: set[str] = set()
+
+    def _add_node(node_id: str, kind: str, label: str, weight: float | None = None):
+        if node_id not in node_ids:
+            node = {"id": node_id, "type": kind, "label": label}
+            if weight is not None:
+                node["weight"] = weight
+            nodes.append(node)
+            node_ids.add(node_id)
+
+    def _add_edge(source: str, target: str, operation: str, weight: float | None = None):
+        edge = {"source": source, "target": target, "operation": operation}
+        if weight is not None:
+            edge["weight"] = weight
+        edges.append(edge)
+
+    for feat in selected_features:
+        feat_shap_val = abs(feature_shap_means.get(feat, 0.0))
+        _add_node(feat, "selected_feature", feat, weight=feat_shap_val)
+
+        origin = _parse_feature_origin(feat, original_columns)
+        parents = origin.get("parents", [])
+        operation = origin.get("operation", "transform")
+
+        if len(parents) == 1:
+            parent = parents[0]
+            _add_node(parent, "original", parent)
+            _add_edge(parent, feat, operation)
+        elif len(parents) > 1:
+            total_shap = feat_shap_val
+            if total_shap > 0:
+                parent_shaps = [abs(feature_shap_means.get(p, 0.0)) for p in parents]
+                parent_sum = sum(parent_shaps) if sum(parent_shaps) > 0 else len(parents)
+                weights = [s / parent_sum for s in parent_shaps]
+            else:
+                weights = [1.0 / len(parents) for _ in parents]
+
+            for i, parent in enumerate(parents):
+                _add_node(parent, "original", parent)
+                _add_edge(parent, feat, operation, weight=weights[i])
+
+    tree_data: dict[str, dict] = {}
+    for feat in selected_features:
+        origin = _parse_feature_origin(feat, original_columns)
+        parents = origin.get("parents", [])
+        feat_shap_val = abs(feature_shap_means.get(feat, 0.0))
+
+        children = []
+        if len(parents) > 1:
+            total_shap = feat_shap_val
+            if total_shap > 0:
+                parent_shaps = [abs(feature_shap_means.get(p, 0.0)) for p in parents]
+                parent_sum = sum(parent_shaps) if sum(parent_shaps) > 0 else len(parents)
+                weights = [s / parent_sum for s in parent_shaps]
+            else:
+                weights = [1.0 / len(parents) for _ in parents]
+
+            for i, p in enumerate(parents):
+                children.append({
+                    "name": p,
+                    "type": "original",
+                    "contribution_weight": weights[i],
+                })
+        elif len(parents) == 1:
+            children.append({
+                "name": parents[0],
+                "type": "original",
+                "contribution_weight": 1.0,
+            })
+
+        tree_data[feat] = {
+            "name": feat,
+            "type": "selected_feature",
+            "operation": origin.get("operation", "transform"),
+            "shap_importance": feat_shap_val,
+            "children": children,
+        }
+
+    return {
+        "nodes": nodes,
+        "edges": edges,
+        "tree": tree_data,
+    }
+
+
+@celery_app.task(name="app.tasks.feature_attribution.run", bind=True)
+def feature_attribution_task(self, task_id: int):
+    engine = _get_sync_engine()
+    with Session(engine) as session:
+        task = session.get(Task, task_id)
+        if not task:
+            return
+
+        attribution_record = FeatureAttribution(
+            task_id=task_id,
+            status="running",
+        )
+        session.add(attribution_record)
+        session.commit()
+        session.refresh(attribution_record)
+
+        attribution_id = attribution_record.id
+        channel = f"feature_attribution:{task_id}"
+
+        def _publish_attr(stage: str, progress: int, data: dict | None = None):
+            try:
+                r = redis.from_url(settings.REDIS_URL)
+                msg = {"stage": stage, "progress": progress, "attribution_id": attribution_id}
+                if data is not None:
+                    msg["data"] = data
+                r.publish(channel, json.dumps(msg))
+                r.close()
+            except Exception:
+                pass
+
+        _publish_attr("started", 0)
+
+        try:
+            selected_path = os.path.join(
+                settings.UPLOAD_DIR, f"selected_{task_id}.parquet"
+            )
+            if not os.path.exists(selected_path):
+                raise ValueError("Selected features dataset not found. Please complete feature selection first.")
+
+            X_selected = pd.read_parquet(selected_path)
+            selected_features = list(X_selected.columns)
+
+            if len(selected_features) == 0:
+                raise ValueError("selected_features is empty. Please complete feature selection first.")
+
+            _publish_attr("loading_model", 10)
+
+            best_models_path = os.path.join(
+                settings.PIPELINE_DIR, f"best_models_{task_id}.joblib"
+            )
+            if not os.path.exists(best_models_path):
+                raise ValueError(f"Model file not found at {best_models_path}")
+
+            import joblib
+            try:
+                trained_models = joblib.load(best_models_path)
+            except Exception as e:
+                raise ValueError(f"Failed to load model: {str(e)}")
+
+            if not trained_models:
+                raise ValueError("No trained models found in pipeline")
+
+            best_model_name = list(trained_models.keys())[0]
+            best_model = trained_models[best_model_name]
+
+            _publish_attr("loading_data", 20)
+
+            df = _load_dataframe(task)
+            y = df[task.target_column].values
+
+            if task.task_type == "classification":
+                from sklearn.preprocessing import LabelEncoder
+                le = LabelEncoder()
+                y = le.fit_transform(y)
+
+            n_samples = len(X_selected)
+            if n_samples > 5000:
+                rng = np.random.RandomState(42)
+                sample_idx = rng.choice(n_samples, 5000, replace=False)
+                X_sample = X_selected.iloc[sample_idx]
+            else:
+                X_sample = X_selected.copy()
+
+            _publish_attr("computing_shap", 30)
+
+            import shap
+            from sklearn.ensemble import (
+                GradientBoostingClassifier, GradientBoostingRegressor,
+                RandomForestClassifier, RandomForestRegressor,
+            )
+            from xgboost import XGBClassifier, XGBRegressor
+            from lightgbm import LGBMClassifier, LGBMRegressor
+            try:
+                from catboost import CatBoostClassifier, CatBoostRegressor
+                HAS_CATBOOST = True
+            except ImportError:
+                HAS_CATBOOST = False
+
+            TREE_TYPES = (
+                RandomForestClassifier, RandomForestRegressor,
+                GradientBoostingClassifier, GradientBoostingRegressor,
+                XGBClassifier, XGBRegressor,
+                LGBMClassifier, LGBMRegressor,
+            )
+            if HAS_CATBOOST:
+                TREE_TYPES = TREE_TYPES + (CatBoostClassifier, CatBoostRegressor)
+
+            if isinstance(best_model, TREE_TYPES):
+                explainer = shap.TreeExplainer(best_model)
+            else:
+                background = shap.sample(X_sample, min(100, len(X_sample)), random_state=42)
+                explainer = shap.KernelExplainer(best_model.predict, background)
+
+            shap_values_obj = explainer(X_sample)
+            shap_values_raw = shap_values_obj.values
+
+            if shap_values_raw.ndim == 3:
+                shap_values_2d = shap_values_raw.mean(axis=2)
+            else:
+                shap_values_2d = shap_values_raw
+
+            feature_names = list(X_sample.columns)
+            shap_abs_mean = np.abs(shap_values_2d).mean(axis=0)
+
+            sorted_indices = np.argsort(shap_abs_mean)[::-1]
+            global_importance = [
+                {"feature": feature_names[i], "shap_value": float(shap_abs_mean[i])}
+                for i in sorted_indices
+            ]
+
+            per_feature_shap: dict[str, list[float]] = {}
+            for j, fname in enumerate(feature_names):
+                per_feature_shap[fname] = [float(v) for v in shap_values_2d[:, j]]
+
+            shap_values_result = {
+                "global_importance": global_importance,
+                "feature_names": feature_names,
+                "sample_count": len(X_sample),
+                "per_feature_mean": {fname: float(shap_abs_mean[j]) for j, fname in enumerate(feature_names)},
+            }
+
+            _publish_attr("computing_interactions", 60)
+
+            interaction_matrix_result: dict = {}
+            try:
+                if isinstance(best_model, TREE_TYPES):
+                    interaction_values = explainer.shap_interaction_values(X_sample)
+                    if isinstance(interaction_values, list):
+                        iv = np.mean(np.stack(interaction_values), axis=0)
+                    else:
+                        iv = interaction_values
+
+                    if iv.ndim == 4:
+                        iv = iv.mean(axis=3)
+
+                    n_feat = len(feature_names)
+                    interaction_strength = np.zeros((n_feat, n_feat))
+                    for i in range(n_feat):
+                        for j in range(n_feat):
+                            if i != j:
+                                interaction_strength[i, j] = np.abs(iv[:, i, j]).mean()
+
+                    top_k = min(5, n_feat)
+                    top_indices = np.argsort(shap_abs_mean)[::-1][:top_k]
+
+                    top_matrix = []
+                    for i in top_indices:
+                        row = []
+                        for j in top_indices:
+                            row.append(float(interaction_strength[i, j]))
+                        top_matrix.append(row)
+
+                    pairs: list[tuple[int, int, float]] = []
+                    for i in range(n_feat):
+                        for j in range(i + 1, n_feat):
+                            pairs.append((i, j, float(interaction_strength[i, j])))
+                    pairs.sort(key=lambda x: x[2], reverse=True)
+                    top_5_pairs = [
+                        {
+                            "feature_a": feature_names[p[0]],
+                            "feature_b": feature_names[p[1]],
+                            "strength": p[2],
+                        }
+                        for p in pairs[:5]
+                    ]
+
+                    interaction_matrix_result = {
+                        "top_features": [feature_names[i] for i in top_indices],
+                        "matrix": top_matrix,
+                        "top_5_pairs": top_5_pairs,
+                    }
+                else:
+                    interaction_matrix_result = {
+                        "top_features": feature_names[:min(5, len(feature_names))],
+                        "matrix": [],
+                        "top_5_pairs": [],
+                        "note": "Interaction values only supported for tree-based models (TreeExplainer)",
+                    }
+            except Exception as e:
+                logger.warning(f"Interaction computation failed: {e}")
+                interaction_matrix_result = {
+                    "top_features": feature_names[:min(5, len(feature_names))],
+                    "matrix": [],
+                    "top_5_pairs": [],
+                    "error": str(e),
+                }
+
+            _publish_attr("building_dag", 85)
+
+            cols = session.query(ColumnInference).filter(
+                ColumnInference.task_id == task_id
+            ).all()
+            original_columns = [c.column_name for c in cols if c.column_name != task.target_column]
+
+            feature_shap_means = {fname: float(shap_abs_mean[j]) for j, fname in enumerate(feature_names)}
+            dag_result = _build_feature_dag(selected_features, original_columns, feature_shap_means)
+
+            attribution_record = session.get(FeatureAttribution, attribution_id)
+            attribution_record.shap_values = shap_values_result
+            attribution_record.interaction_matrix = interaction_matrix_result
+            attribution_record.feature_dag = dag_result
+            attribution_record.status = "completed"
+            attribution_record.completed_at = datetime.datetime.utcnow()
+            session.commit()
+
+            _publish_attr("completed", 100, {
+                "attribution_id": attribution_id,
+            })
+
+        except Exception as e:
+            logger.exception(f"Feature attribution failed for task {task_id}")
+            attribution_record = session.get(FeatureAttribution, attribution_id)
+            if attribution_record:
+                attribution_record.status = "failed"
+                attribution_record.error_message = str(e)
+                session.commit()
+            _publish_attr("failed", 0, {"error": str(e)})

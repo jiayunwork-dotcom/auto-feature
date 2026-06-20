@@ -11,6 +11,7 @@ import EnsemblePage from "@/pages/EnsemblePage";
 import ExplainabilityPage from "@/pages/ExplainabilityPage";
 import PipelinePage from "@/pages/PipelinePage";
 import QualityReportPage from "@/pages/QualityReportPage";
+import FeatureAttributionPage from "@/pages/FeatureAttributionPage";
 
 export default function App() {
   return (
@@ -28,6 +29,7 @@ export default function App() {
           <Route path="/ensemble/:taskId" element={<EnsemblePage />} />
           <Route path="/explainability/:taskId" element={<ExplainabilityPage />} />
           <Route path="/pipeline/:taskId" element={<PipelinePage />} />
+          <Route path="/attribution/:taskId" element={<FeatureAttributionPage />} />
         </Route>
       </Routes>
     </Router>

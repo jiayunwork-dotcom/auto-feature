@@ -9,6 +9,7 @@ from app.api.explainability import router as explainability_router
 from app.api.pipeline import router as pipeline_router
 from app.api.quality_report import router as quality_report_router
 from app.api.data_versioning import router as data_versioning_router
+from app.api.feature_attribution import router as feature_attribution_router
 
 router = APIRouter()
 
@@ -21,3 +22,4 @@ router.include_router(explainability_router, tags=["explainability"])
 router.include_router(pipeline_router, tags=["pipeline"])
 router.include_router(quality_report_router, tags=["quality-report"])
 router.include_router(data_versioning_router, tags=["data-versioning"])
+router.include_router(feature_attribution_router, tags=["feature-attribution"])
