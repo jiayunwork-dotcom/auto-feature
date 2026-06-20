@@ -115,3 +115,29 @@ async def websocket_drift_comparison(websocket: WebSocket, comparison_id: int):
     finally:
         pubsub.unsubscribe(channel)
         pubsub.close()
+
+
+@app.websocket("/ws/drift-report-export/{export_id}")
+async def websocket_drift_report_export(websocket: WebSocket, export_id: int):
+    await websocket.accept()
+    if not redis_client:
+        await websocket.close()
+        return
+
+    pubsub = redis_client.pubsub()
+    channel = f"drift_report_export:{export_id}"
+    pubsub.subscribe(channel)
+
+    try:
+        while True:
+            message = pubsub.get_message(timeout=1.0)
+            if message and message["type"] == "message":
+                data = message["data"]
+                if isinstance(data, bytes):
+                    data = data.decode("utf-8")
+                await websocket.send_text(data)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        pubsub.unsubscribe(channel)
+        pubsub.close()

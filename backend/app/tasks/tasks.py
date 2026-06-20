@@ -27,7 +27,10 @@ from app.models.models import (
     DriftComparison,
     DriftWarning,
     DatasetVersion,
+    AutoCompareStrategy,
+    DriftReportExport,
 )
+from app.services.drift_service import compare_versions
 from app.tasks.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -548,7 +551,13 @@ def quality_report_task(self, task_id: int):
 
 
 @celery_app.task(name="app.tasks.drift_comparison.run", bind=True)
-def drift_comparison_task(self, comparison_id: int):
+def drift_comparison_task(
+    self,
+    comparison_id: int,
+    p_value_threshold: float | None = None,
+    psi_threshold: float | None = None,
+    drift_ratio_threshold: float | None = None,
+):
     engine = _get_sync_engine()
     with Session(engine) as session:
         comparison = session.get(DriftComparison, comparison_id)
@@ -576,6 +585,25 @@ def drift_comparison_task(self, comparison_id: int):
         _publish_drift("started", 0)
 
         try:
+            strategy = (
+                session.query(AutoCompareStrategy)
+                .filter(AutoCompareStrategy.task_id == task_id)
+                .first()
+            )
+
+            if strategy:
+                if p_value_threshold is None and strategy.custom_p_value_threshold is not None:
+                    p_value_threshold = strategy.custom_p_value_threshold
+                if psi_threshold is None and strategy.custom_psi_threshold is not None:
+                    psi_threshold = strategy.custom_psi_threshold
+                if drift_ratio_threshold is None and strategy.custom_drift_ratio_threshold is not None:
+                    drift_ratio_threshold = strategy.custom_drift_ratio_threshold
+
+            p_value_threshold = p_value_threshold if p_value_threshold is not None else 0.05
+            psi_threshold_significant = psi_threshold if psi_threshold is not None else 0.2
+            psi_threshold_mild = psi_threshold / 2 if psi_threshold is not None else 0.1
+            drift_ratio_threshold = drift_ratio_threshold if drift_ratio_threshold is not None else 0.2
+
             version_a = session.get(DatasetVersion, comparison.version_a_id)
             version_b = session.get(DatasetVersion, comparison.version_b_id)
 
@@ -597,10 +625,15 @@ def drift_comparison_task(self, comparison_id: int):
                     pct = int(10 + (current / total) * 85)
                     _publish_drift("comparing", pct, {"current": current, "total": total})
 
-            from app.services.drift_service import compare_versions
-
             result = compare_versions(
-                df_a, df_b, columns_info_a, columns_info_b, progress_callback=_progress_cb
+                df_a,
+                df_b,
+                columns_info_a,
+                columns_info_b,
+                progress_callback=_progress_cb,
+                p_value_threshold=p_value_threshold,
+                psi_threshold_mild=psi_threshold_mild,
+                psi_threshold_significant=psi_threshold_significant,
             )
 
             column_results = result["column_results"]
@@ -610,7 +643,7 @@ def drift_comparison_task(self, comparison_id: int):
             common_count = len(column_results)
             significant_count = sum(1 for r in column_results if r["verdict"] == "显著漂移")
             significant_drift_ratio = significant_count / common_count if common_count > 0 else 0.0
-            overall_warning = significant_drift_ratio > 0.2
+            overall_warning = significant_drift_ratio > drift_ratio_threshold
 
             comparison = session.get(DriftComparison, comparison_id)
             comparison.column_results = {"columns": column_results}
@@ -650,3 +683,166 @@ def drift_comparison_task(self, comparison_id: int):
                 comparison.error_message = str(e)
                 session.commit()
             _publish_drift("failed", 0, {"error": str(e)})
+
+
+@celery_app.task(name="app.tasks.auto_compare.poll")
+def auto_compare_poll_task():
+    engine = _get_sync_engine()
+    with Session(engine) as session:
+        strategies = session.query(AutoCompareStrategy).filter(
+            AutoCompareStrategy.is_enabled == True,
+            AutoCompareStrategy.trigger_mode == "scheduled"
+        ).all()
+
+        now = datetime.datetime.utcnow()
+
+        for strategy in strategies:
+            task_id = strategy.task_id
+            interval_minutes = strategy.poll_interval_minutes or 60
+
+            if strategy.last_triggered_at:
+                elapsed = (now - strategy.last_triggered_at).total_seconds() / 60.0
+                if elapsed < interval_minutes:
+                    continue
+
+            versions = session.query(DatasetVersion).filter(
+                DatasetVersion.task_id == task_id
+            ).order_by(DatasetVersion.version_number.asc()).all()
+
+            if len(versions) < 2:
+                continue
+
+            latest_version = versions[-1]
+
+            existing_comparison = session.query(DriftComparison).filter(
+                DriftComparison.task_id == task_id,
+                DriftComparison.version_b_id == latest_version.id
+            ).first()
+
+            if existing_comparison:
+                strategy.last_triggered_at = now
+                session.commit()
+                continue
+
+            if strategy.baseline_mode == "first_version":
+                baseline_version = versions[0]
+            else:
+                baseline_version = versions[-2]
+
+            if baseline_version.id == latest_version.id:
+                strategy.last_triggered_at = now
+                session.commit()
+                continue
+
+            comparison = DriftComparison(
+                task_id=task_id,
+                version_a_id=baseline_version.id,
+                version_b_id=latest_version.id,
+                status="pending",
+            )
+            session.add(comparison)
+            strategy.last_triggered_at = now
+            session.commit()
+            session.refresh(comparison)
+
+            drift_comparison_task.delay(comparison.id)
+
+
+@celery_app.task(name="app.tasks.drift_report.export", bind=True)
+def generate_drift_report_task(self, export_id: int):
+    engine = _get_sync_engine()
+    with Session(engine) as session:
+        export_record = session.get(DriftReportExport, export_id)
+        if not export_record:
+            return
+
+        export_record.status = "running"
+        session.commit()
+        session.refresh(export_record)
+
+        channel = f"drift_report_export:{export_id}"
+
+        try:
+            from app.services.pdf_report_service import DriftPDFReportService
+            result = DriftPDFReportService.generate_report(comparison_id=export_record.comparison_id)
+
+            export_record = session.get(DriftReportExport, export_id)
+            export_record.status = "completed"
+            export_record.file_path = result.get("file_path")
+            export_record.file_name = result.get("file_name")
+            export_record.file_size = result.get("file_size")
+            export_record.completed_at = datetime.datetime.utcnow()
+            session.commit()
+
+            download_url = f"/api/tasks/{export_record.task_id}/exports/{export_id}/download"
+            try:
+                r = redis.from_url(settings.REDIS_URL)
+                msg = {
+                    "status": "completed",
+                    "download_url": download_url,
+                    "export_id": export_id,
+                }
+                r.publish(channel, json.dumps(msg))
+                r.close()
+            except Exception:
+                pass
+
+        except Exception as e:
+            logger.exception(f"Drift report export failed for export {export_id}")
+            export_record = session.get(DriftReportExport, export_id)
+            if export_record:
+                export_record.status = "failed"
+                export_record.error_message = str(e)
+                session.commit()
+            try:
+                r = redis.from_url(settings.REDIS_URL)
+                msg = {
+                    "status": "failed",
+                    "error_message": str(e),
+                    "export_id": export_id,
+                }
+                r.publish(channel, json.dumps(msg))
+                r.close()
+            except Exception:
+                pass
+
+
+def trigger_auto_compare_on_upload(task_id: int, new_version_id: int):
+    engine = _get_sync_engine()
+    with Session(engine) as session:
+        strategy = session.query(AutoCompareStrategy).filter(
+            AutoCompareStrategy.task_id == task_id,
+            AutoCompareStrategy.is_enabled == True,
+            AutoCompareStrategy.trigger_mode == "on_upload"
+        ).first()
+
+        if not strategy:
+            return
+
+        versions = session.query(DatasetVersion).filter(
+            DatasetVersion.task_id == task_id
+        ).order_by(DatasetVersion.version_number.asc()).all()
+
+        if len(versions) < 2:
+            return
+
+        if strategy.baseline_mode == "first_version":
+            baseline_version = versions[0]
+        else:
+            baseline_version = versions[-2] if len(versions) >= 2 else versions[0]
+
+        if baseline_version.id == new_version_id:
+            return
+
+        comparison = DriftComparison(
+            task_id=task_id,
+            version_a_id=baseline_version.id,
+            version_b_id=new_version_id,
+            status="pending",
+        )
+        session.add(comparison)
+        strategy.last_triggered_at = datetime.datetime.utcnow()
+        session.commit()
+        session.refresh(comparison)
+
+        drift_comparison_task.delay(comparison.id)

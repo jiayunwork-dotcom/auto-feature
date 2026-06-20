@@ -1,17 +1,28 @@
 import datetime
 import hashlib
+import json
 import os
 import uuid
+from typing import Optional
 
 import pandas as pd
+import redis as redis_lib
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
-from pydantic import BaseModel
+from fastapi.responses import FileResponse
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.database import get_db
-from app.models.models import DatasetVersion, DriftComparison, DriftWarning, Task
+from app.models.models import (
+    DatasetVersion,
+    DriftComparison,
+    DriftWarning,
+    Task,
+    AutoCompareStrategy,
+    DriftReportExport,
+)
 
 router = APIRouter()
 
@@ -33,6 +44,90 @@ def _infer_column_type(series: pd.Series) -> str:
         return "boolean"
     else:
         return "categorical"
+
+
+def _get_default_strategy() -> dict:
+    return {
+        "is_enabled": False,
+        "trigger_mode": "on_upload",
+        "baseline_mode": "first_version",
+        "custom_p_value_threshold": None,
+        "custom_psi_threshold": None,
+        "custom_drift_ratio_threshold": None,
+        "poll_interval_minutes": 60,
+        "last_triggered_at": None,
+        "created_at": None,
+        "updated_at": None,
+    }
+
+
+def _update_celery_beat_schedule():
+    try:
+        r = redis_lib.from_url(settings.REDIS_URL)
+        schedule_data = {}
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import Session
+        SYNC_DB_URL = settings.DATABASE_URL.replace("+asyncpg", "+psycopg2")
+        engine = create_engine(SYNC_DB_URL)
+        with Session(engine) as session:
+            strategies = session.query(AutoCompareStrategy).filter(
+                AutoCompareStrategy.is_enabled == True,
+                AutoCompareStrategy.trigger_mode == "scheduled"
+            ).all()
+            for s in strategies:
+                schedule_data[str(s.task_id)] = {
+                    "task_id": s.task_id,
+                    "poll_interval_minutes": s.poll_interval_minutes or 60,
+                    "baseline_mode": s.baseline_mode,
+                }
+        r.set("auto_compare_schedule", json.dumps(schedule_data))
+        r.close()
+    except Exception:
+        pass
+
+
+class AutoCompareStrategyRequest(BaseModel):
+    is_enabled: bool
+    trigger_mode: str = Field(pattern=r'^(on_upload|scheduled)$')
+    baseline_mode: str = Field(pattern=r'^(first_version|previous_version)$')
+    custom_p_value_threshold: Optional[float] = None
+    custom_psi_threshold: Optional[float] = None
+    custom_drift_ratio_threshold: Optional[float] = None
+    poll_interval_minutes: int = Field(ge=5, le=1440)
+
+    @field_validator('poll_interval_minutes')
+    @classmethod
+    def check_poll_interval(cls, v: int) -> int:
+        if v < 5 or v > 1440:
+            raise ValueError('poll_interval_minutes must be between 5 and 1440')
+        return v
+
+
+class AutoCompareStrategyResponse(BaseModel):
+    task_id: int
+    is_enabled: bool
+    trigger_mode: str
+    baseline_mode: str
+    custom_p_value_threshold: Optional[float]
+    custom_psi_threshold: Optional[float]
+    custom_drift_ratio_threshold: Optional[float]
+    poll_interval_minutes: int
+    last_triggered_at: Optional[str]
+    created_at: Optional[str]
+    updated_at: Optional[str]
+
+
+class DriftReportExportResponse(BaseModel):
+    id: int
+    task_id: int
+    comparison_id: Optional[int]
+    status: str
+    file_path: Optional[str]
+    file_name: Optional[str]
+    file_size: Optional[int]
+    error_message: Optional[str]
+    created_at: Optional[str]
+    completed_at: Optional[str]
 
 
 @router.post("/tasks/{task_id}/versions")
@@ -101,6 +196,9 @@ async def create_version(task_id: int, file: UploadFile = File(...), db: AsyncSe
     db.add(dataset_version)
     await db.commit()
     await db.refresh(dataset_version)
+
+    from app.tasks.tasks import trigger_auto_compare_on_upload
+    trigger_auto_compare_on_upload(task_id, dataset_version.id)
 
     return {
         "id": dataset_version.id,
@@ -384,3 +482,206 @@ async def acknowledge_warning(task_id: int, warning_id: int, db: AsyncSession = 
     await db.commit()
 
     return {"message": "Warning acknowledged successfully", "warning_id": warning_id}
+
+
+@router.get("/tasks/{task_id}/auto-compare-strategy", response_model=AutoCompareStrategyResponse)
+async def get_auto_compare_strategy(task_id: int, db: AsyncSession = Depends(get_db)):
+    task = await db.get(Task, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    result = await db.execute(
+        select(AutoCompareStrategy).where(AutoCompareStrategy.task_id == task_id)
+    )
+    strategy = result.scalars().first()
+
+    if not strategy:
+        default = _get_default_strategy()
+        default["task_id"] = task_id
+        return AutoCompareStrategyResponse(**default)
+
+    return AutoCompareStrategyResponse(
+        task_id=strategy.task_id,
+        is_enabled=strategy.is_enabled,
+        trigger_mode=strategy.trigger_mode,
+        baseline_mode=strategy.baseline_mode,
+        custom_p_value_threshold=strategy.custom_p_value_threshold,
+        custom_psi_threshold=strategy.custom_psi_threshold,
+        custom_drift_ratio_threshold=strategy.custom_drift_ratio_threshold,
+        poll_interval_minutes=strategy.poll_interval_minutes or 60,
+        last_triggered_at=strategy.last_triggered_at.isoformat() if strategy.last_triggered_at else None,
+        created_at=strategy.created_at.isoformat() if strategy.created_at else None,
+        updated_at=strategy.updated_at.isoformat() if strategy.updated_at else None,
+    )
+
+
+@router.put("/tasks/{task_id}/auto-compare-strategy", response_model=AutoCompareStrategyResponse)
+async def update_auto_compare_strategy(
+    task_id: int,
+    req: AutoCompareStrategyRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    task = await db.get(Task, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    result = await db.execute(
+        select(AutoCompareStrategy).where(AutoCompareStrategy.task_id == task_id)
+    )
+    strategy = result.scalars().first()
+
+    if not strategy:
+        strategy = AutoCompareStrategy(task_id=task_id)
+        db.add(strategy)
+
+    strategy.is_enabled = req.is_enabled
+    strategy.trigger_mode = req.trigger_mode
+    strategy.baseline_mode = req.baseline_mode
+    strategy.custom_p_value_threshold = req.custom_p_value_threshold
+    strategy.custom_psi_threshold = req.custom_psi_threshold
+    strategy.custom_drift_ratio_threshold = req.custom_drift_ratio_threshold
+    strategy.poll_interval_minutes = req.poll_interval_minutes
+
+    await db.commit()
+    await db.refresh(strategy)
+
+    if req.trigger_mode == "scheduled":
+        _update_celery_beat_schedule()
+
+    return AutoCompareStrategyResponse(
+        task_id=strategy.task_id,
+        is_enabled=strategy.is_enabled,
+        trigger_mode=strategy.trigger_mode,
+        baseline_mode=strategy.baseline_mode,
+        custom_p_value_threshold=strategy.custom_p_value_threshold,
+        custom_psi_threshold=strategy.custom_psi_threshold,
+        custom_drift_ratio_threshold=strategy.custom_drift_ratio_threshold,
+        poll_interval_minutes=strategy.poll_interval_minutes or 60,
+        last_triggered_at=strategy.last_triggered_at.isoformat() if strategy.last_triggered_at else None,
+        created_at=strategy.created_at.isoformat() if strategy.created_at else None,
+        updated_at=strategy.updated_at.isoformat() if strategy.updated_at else None,
+    )
+
+
+@router.delete("/tasks/{task_id}/auto-compare-strategy")
+async def delete_auto_compare_strategy(task_id: int, db: AsyncSession = Depends(get_db)):
+    task = await db.get(Task, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    result = await db.execute(
+        select(AutoCompareStrategy).where(AutoCompareStrategy.task_id == task_id)
+    )
+    strategy = result.scalars().first()
+
+    if strategy:
+        await db.delete(strategy)
+        await db.commit()
+        _update_celery_beat_schedule()
+
+    return {"message": "Strategy deleted successfully"}
+
+
+@router.post("/tasks/{task_id}/comparisons/{comparison_id}/export")
+async def create_drift_report_export(
+    task_id: int,
+    comparison_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    task = await db.get(Task, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    comparison = await db.get(DriftComparison, comparison_id)
+    if not comparison or comparison.task_id != task_id:
+        raise HTTPException(status_code=404, detail="Comparison not found")
+
+    if comparison.status != "completed":
+        raise HTTPException(status_code=400, detail="Only completed comparisons can be exported")
+
+    export_record = DriftReportExport(
+        task_id=task_id,
+        comparison_id=comparison_id,
+        status="pending",
+    )
+    db.add(export_record)
+    await db.commit()
+    await db.refresh(export_record)
+
+    from app.tasks.tasks import generate_drift_report_task
+    generate_drift_report_task.delay(export_record.id)
+
+    return {"export_id": export_record.id, "status": "pending"}
+
+
+@router.get("/tasks/{task_id}/exports")
+async def list_exports(task_id: int, db: AsyncSession = Depends(get_db)):
+    task = await db.get(Task, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    result = await db.execute(
+        select(DriftReportExport)
+        .where(DriftReportExport.task_id == task_id)
+        .order_by(DriftReportExport.created_at.desc())
+    )
+    exports = result.scalars().all()
+
+    return {
+        "exports": [
+            {
+                "id": e.id,
+                "task_id": e.task_id,
+                "comparison_id": e.comparison_id,
+                "status": e.status,
+                "file_path": e.file_path,
+                "file_name": e.file_name,
+                "file_size": e.file_size,
+                "error_message": e.error_message,
+                "created_at": e.created_at.isoformat() if e.created_at else None,
+                "completed_at": e.completed_at.isoformat() if e.completed_at else None,
+            }
+            for e in exports
+        ]
+    }
+
+
+@router.get("/tasks/{task_id}/exports/{export_id}", response_model=DriftReportExportResponse)
+async def get_export(task_id: int, export_id: int, db: AsyncSession = Depends(get_db)):
+    export_record = await db.get(DriftReportExport, export_id)
+    if not export_record or export_record.task_id != task_id:
+        raise HTTPException(status_code=404, detail="Export not found")
+
+    return DriftReportExportResponse(
+        id=export_record.id,
+        task_id=export_record.task_id,
+        comparison_id=export_record.comparison_id,
+        status=export_record.status,
+        file_path=export_record.file_path,
+        file_name=export_record.file_name,
+        file_size=export_record.file_size,
+        error_message=export_record.error_message,
+        created_at=export_record.created_at.isoformat() if export_record.created_at else None,
+        completed_at=export_record.completed_at.isoformat() if export_record.completed_at else None,
+    )
+
+
+@router.get("/tasks/{task_id}/exports/{export_id}/download")
+async def download_export(task_id: int, export_id: int, db: AsyncSession = Depends(get_db)):
+    export_record = await db.get(DriftReportExport, export_id)
+    if not export_record or export_record.task_id != task_id:
+        raise HTTPException(status_code=404, detail="Export not found")
+
+    if export_record.status != "completed":
+        raise HTTPException(status_code=400, detail="Export is not completed yet")
+
+    if not export_record.file_path or not os.path.exists(export_record.file_path):
+        raise HTTPException(status_code=404, detail="Export file not found")
+
+    file_name = export_record.file_name or f"drift_report_{export_id}.pdf"
+    return FileResponse(
+        path=export_record.file_path,
+        filename=file_name,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{file_name}"},
+    )

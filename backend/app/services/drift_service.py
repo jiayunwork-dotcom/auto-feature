@@ -164,6 +164,9 @@ def compare_versions(
     columns_info_a: dict,
     columns_info_b: dict,
     progress_callback=None,
+    p_value_threshold: float = 0.05,
+    psi_threshold_mild: float = 0.1,
+    psi_threshold_significant: float = 0.2,
 ) -> dict:
     cols_a = set(df_a.columns)
     cols_b = set(df_b.columns)
@@ -188,7 +191,7 @@ def compare_versions(
             ks_result = compute_ks_test(series_a, series_b)
             statistic = ks_result["statistic"]
             p_value_or_psi = ks_result["p_value"]
-            if p_value_or_psi < 0.05:
+            if p_value_or_psi < p_value_threshold:
                 verdict = "显著漂移"
             else:
                 verdict = "稳定"
@@ -197,9 +200,9 @@ def compare_versions(
             psi_result = compute_psi(series_a, series_b)
             statistic = None
             p_value_or_psi = psi_result["psi"]
-            if p_value_or_psi > 0.2:
+            if p_value_or_psi > psi_threshold_significant:
                 verdict = "显著漂移"
-            elif 0.1 <= p_value_or_psi <= 0.2:
+            elif psi_threshold_mild <= p_value_or_psi <= psi_threshold_significant:
                 verdict = "轻微漂移"
             else:
                 verdict = "稳定"

@@ -43,6 +43,8 @@ class Task(Base):
     dataset_versions = relationship("DatasetVersion", back_populates="task", cascade="all, delete-orphan")
     drift_comparisons = relationship("DriftComparison", back_populates="task", cascade="all, delete-orphan")
     drift_warnings = relationship("DriftWarning", back_populates="task", cascade="all, delete-orphan")
+    auto_compare_strategy = relationship("AutoCompareStrategy", back_populates="task", uselist=False, cascade="all, delete-orphan")
+    drift_report_exports = relationship("DriftReportExport", back_populates="task", cascade="all, delete-orphan")
 
 
 class ColumnInference(Base):
@@ -209,3 +211,46 @@ class DriftWarning(Base):
     acknowledged_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)
 
     task = relationship("Task", back_populates="drift_warnings")
+
+
+class AutoCompareStrategy(Base):
+    __tablename__ = "auto_compare_strategies"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    task_id: Mapped[int] = mapped_column(Integer, ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False, unique=True)
+    is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    trigger_mode: Mapped[str] = mapped_column(String(32), nullable=False, default="on_upload")
+    baseline_mode: Mapped[str] = mapped_column(String(32), nullable=False, default="first_version")
+    custom_p_value_threshold: Mapped[float | None] = mapped_column(Float, nullable=True)
+    custom_psi_threshold: Mapped[float | None] = mapped_column(Float, nullable=True)
+    custom_drift_ratio_threshold: Mapped[float | None] = mapped_column(Float, nullable=True)
+    poll_interval_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True, default=60)
+    last_triggered_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.datetime.utcnow
+    )
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow
+    )
+
+    task = relationship("Task", back_populates="auto_compare_strategy")
+
+
+class DriftReportExport(Base):
+    __tablename__ = "drift_report_exports"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    task_id: Mapped[int] = mapped_column(Integer, ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False)
+    comparison_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("drift_comparisons.id", ondelete="CASCADE"), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    file_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    file_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    file_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.datetime.utcnow
+    )
+    completed_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)
+
+    task = relationship("Task", back_populates="drift_report_exports")
+    comparison = relationship("DriftComparison")

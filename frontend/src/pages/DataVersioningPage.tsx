@@ -6,8 +6,11 @@ import {
   deleteDatasetVersion,
   getDriftComparisons,
   startDriftComparison,
+  getAutoCompareStrategy,
+  updateAutoCompareStrategy,
+  deleteAutoCompareStrategy,
 } from "@/utils/api";
-import type { DatasetVersion, DriftComparison } from "@/utils/api";
+import type { DatasetVersion, DriftComparison, AutoCompareStrategy } from "@/utils/api";
 import { useTaskStore } from "@/stores/taskStore";
 import {
   Upload,
@@ -23,6 +26,10 @@ import {
   Columns3,
   Calendar,
   Eye,
+  Settings,
+  ChevronDown,
+  ChevronUp,
+  Save,
 } from "lucide-react";
 
 function statusBadge(status: string) {
@@ -57,6 +64,29 @@ export default function DataVersioningPage() {
   const [deleteConfirmId, setDeleteConfirmId] = useState<number | null>(null);
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [comparing, setComparing] = useState(false);
+  const [strategy, setStrategy] = useState<AutoCompareStrategy | null>(null);
+  const [strategyLoading, setStrategyLoading] = useState(false);
+  const [showStrategyPanel, setShowStrategyPanel] = useState(false);
+  const [showThresholds, setShowThresholds] = useState(false);
+  const [savingStrategy, setSavingStrategy] = useState(false);
+  const [deletingStrategy, setDeletingStrategy] = useState(false);
+  const [formStrategy, setFormStrategy] = useState<{
+    is_enabled: boolean;
+    trigger_mode: "on_upload" | "scheduled";
+    baseline_mode: "first_version" | "previous_version";
+    custom_p_value_threshold: number | null;
+    custom_psi_threshold: number | null;
+    custom_drift_ratio_threshold: number | null;
+    poll_interval_minutes: number;
+  }>({
+    is_enabled: false,
+    trigger_mode: "on_upload",
+    baseline_mode: "first_version",
+    custom_p_value_threshold: null,
+    custom_psi_threshold: null,
+    custom_drift_ratio_threshold: null,
+    poll_interval_minutes: 60,
+  });
 
   useEffect(() => {
     if (taskId) {
@@ -67,13 +97,27 @@ export default function DataVersioningPage() {
   useEffect(() => {
     if (!taskId) return;
     setLoading(true);
-    Promise.all([getDatasetVersions(taskId), getDriftComparisons(taskId)])
-      .then(([versRes, compRes]) => {
+    setStrategyLoading(true);
+    Promise.all([getDatasetVersions(taskId), getDriftComparisons(taskId), getAutoCompareStrategy(taskId)])
+      .then(([versRes, compRes, stratRes]) => {
         setVersions(versRes.versions.sort((a, b) => b.version_number - a.version_number));
         setComparisons(compRes.comparisons.sort((a, b) => b.id - a.id));
+        setStrategy(stratRes);
+        setFormStrategy({
+          is_enabled: stratRes.is_enabled,
+          trigger_mode: stratRes.trigger_mode,
+          baseline_mode: stratRes.baseline_mode,
+          custom_p_value_threshold: stratRes.custom_p_value_threshold,
+          custom_psi_threshold: stratRes.custom_psi_threshold,
+          custom_drift_ratio_threshold: stratRes.custom_drift_ratio_threshold,
+          poll_interval_minutes: stratRes.poll_interval_minutes,
+        });
       })
       .catch((err) => setError(err.message))
-      .finally(() => setLoading(false));
+      .finally(() => {
+        setLoading(false);
+        setStrategyLoading(false);
+      });
   }, [taskId]);
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -146,6 +190,54 @@ export default function DataVersioningPage() {
     }
   };
 
+  const refreshStrategy = async () => {
+    if (!taskId) return;
+    setStrategyLoading(true);
+    try {
+      const stratRes = await getAutoCompareStrategy(taskId);
+      setStrategy(stratRes);
+      setFormStrategy({
+        is_enabled: stratRes.is_enabled,
+        trigger_mode: stratRes.trigger_mode,
+        baseline_mode: stratRes.baseline_mode,
+        custom_p_value_threshold: stratRes.custom_p_value_threshold,
+        custom_psi_threshold: stratRes.custom_psi_threshold,
+        custom_drift_ratio_threshold: stratRes.custom_drift_ratio_threshold,
+        poll_interval_minutes: stratRes.poll_interval_minutes,
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load strategy");
+    } finally {
+      setStrategyLoading(false);
+    }
+  };
+
+  const handleSaveStrategy = async () => {
+    if (!taskId) return;
+    setSavingStrategy(true);
+    try {
+      const res = await updateAutoCompareStrategy(taskId, formStrategy);
+      setStrategy(res);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save strategy");
+    } finally {
+      setSavingStrategy(false);
+    }
+  };
+
+  const handleDeleteStrategy = async () => {
+    if (!taskId) return;
+    setDeletingStrategy(true);
+    try {
+      await deleteAutoCompareStrategy(taskId);
+      await refreshStrategy();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to delete strategy");
+    } finally {
+      setDeletingStrategy(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex min-h-[60vh] items-center justify-center">
@@ -168,6 +260,15 @@ export default function DataVersioningPage() {
       <div className="flex items-center justify-between">
         <h2 className="text-2xl font-bold text-white">数据版本管理</h2>
         <div className="flex items-center gap-3">
+          <button
+            onClick={() => setShowStrategyPanel((v) => !v)}
+            className={`flex items-center gap-2 ${
+              showStrategyPanel ? "btn-primary" : "btn-secondary"
+            }`}
+          >
+            <Settings size={16} />
+            自动对比设置
+          </button>
           {selectedVersions.size === 2 && (
             <button
               onClick={handleCompare}
@@ -229,6 +330,336 @@ export default function DataVersioningPage() {
             <AlertCircle size={20} className="text-red-400" />
             <p className="text-red-300">{uploadError}</p>
           </div>
+        </div>
+      )}
+
+      {showStrategyPanel && (
+        <div className="card animate-fade-in">
+          <h3 className="mb-4 text-lg font-semibold text-white flex items-center gap-2">
+            <Settings size={18} className="text-emerald-400" />
+            自动对比策略配置
+            <span className="ml-2">
+              {strategy?.is_enabled ? (
+                <span className="badge badge-success">已启用</span>
+              ) : strategy?.created_at ? (
+                <span className="badge badge-warning">已配置</span>
+              ) : (
+                <span className="badge badge-info">未配置</span>
+              )}
+            </span>
+            {strategy?.last_triggered_at && (
+              <span className="ml-auto text-xs text-slate-400">
+                上次触发: {new Date(strategy.last_triggered_at).toLocaleString("zh-CN")}
+              </span>
+            )}
+          </h3>
+
+          {strategyLoading ? (
+            <div className="flex items-center justify-center py-8">
+              <Loader2 size={24} className="animate-spin text-emerald-400" />
+            </div>
+          ) : (
+            <div className="space-y-5">
+              <div className="flex items-center justify-between">
+                <div>
+                  <label className="text-sm font-medium text-white">启用自动对比</label>
+                  <p className="text-xs text-slate-400 mt-0.5">开启后将按配置自动执行数据漂移检测</p>
+                </div>
+                <button
+                  onClick={() =>
+                    setFormStrategy((s) => ({ ...s, is_enabled: !s.is_enabled }))
+                  }
+                  className={`relative w-12 h-6 rounded-full transition-colors ${
+                    formStrategy.is_enabled ? "bg-emerald-500" : "bg-slate-600"
+                  }`}
+                >
+                  <span
+                    className={`absolute top-0.5 w-5 h-5 rounded-full bg-white transition-transform ${
+                      formStrategy.is_enabled ? "translate-x-6" : "translate-x-0.5"
+                    }`}
+                  />
+                </button>
+              </div>
+
+              <div>
+                <label className="text-sm font-medium text-white block mb-2">触发模式</label>
+                <div className="flex gap-3">
+                  <label
+                    className={`flex items-center gap-2 px-4 py-2 rounded-lg cursor-pointer border transition-colors ${
+                      formStrategy.trigger_mode === "on_upload"
+                        ? "border-emerald-500 bg-emerald-500/10 text-emerald-300"
+                        : "border-slate-600 text-slate-300 hover:border-slate-500"
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="trigger_mode"
+                      className="hidden"
+                      checked={formStrategy.trigger_mode === "on_upload"}
+                      onChange={() =>
+                        setFormStrategy((s) => ({ ...s, trigger_mode: "on_upload" }))
+                      }
+                    />
+                    <span>每次上传自动对比</span>
+                  </label>
+                  <label
+                    className={`flex items-center gap-2 px-4 py-2 rounded-lg cursor-pointer border transition-colors ${
+                      formStrategy.trigger_mode === "scheduled"
+                        ? "border-emerald-500 bg-emerald-500/10 text-emerald-300"
+                        : "border-slate-600 text-slate-300 hover:border-slate-500"
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="trigger_mode"
+                      className="hidden"
+                      checked={formStrategy.trigger_mode === "scheduled"}
+                      onChange={() =>
+                        setFormStrategy((s) => ({ ...s, trigger_mode: "scheduled" }))
+                      }
+                    />
+                    <span>定时轮询</span>
+                  </label>
+                </div>
+              </div>
+
+              {formStrategy.trigger_mode === "scheduled" && (
+                <div>
+                  <label className="text-sm font-medium text-white block mb-2">
+                    轮询间隔（分钟）
+                    <span className="text-xs text-slate-400 ml-2">范围: 5-1440</span>
+                  </label>
+                  <input
+                    type="number"
+                    min={5}
+                    max={1440}
+                    value={formStrategy.poll_interval_minutes}
+                    onChange={(e) => {
+                      const v = parseInt(e.target.value, 10);
+                      if (!isNaN(v)) {
+                        setFormStrategy((s) => ({
+                          ...s,
+                          poll_interval_minutes: Math.min(1440, Math.max(5, v)),
+                        }));
+                      }
+                    }}
+                    className="w-40 px-3 py-2 bg-slate-800 border border-slate-600 rounded-lg text-white focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+              )}
+
+              <div>
+                <label className="text-sm font-medium text-white block mb-2">基准版本</label>
+                <div className="flex gap-3">
+                  <label
+                    className={`flex items-center gap-2 px-4 py-2 rounded-lg cursor-pointer border transition-colors ${
+                      formStrategy.baseline_mode === "first_version"
+                        ? "border-emerald-500 bg-emerald-500/10 text-emerald-300"
+                        : "border-slate-600 text-slate-300 hover:border-slate-500"
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="baseline_mode"
+                      className="hidden"
+                      checked={formStrategy.baseline_mode === "first_version"}
+                      onChange={() =>
+                        setFormStrategy((s) => ({ ...s, baseline_mode: "first_version" }))
+                      }
+                    />
+                    <span>始终与第1版对比</span>
+                  </label>
+                  <label
+                    className={`flex items-center gap-2 px-4 py-2 rounded-lg cursor-pointer border transition-colors ${
+                      formStrategy.baseline_mode === "previous_version"
+                        ? "border-emerald-500 bg-emerald-500/10 text-emerald-300"
+                        : "border-slate-600 text-slate-300 hover:border-slate-500"
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="baseline_mode"
+                      className="hidden"
+                      checked={formStrategy.baseline_mode === "previous_version"}
+                      onChange={() =>
+                        setFormStrategy((s) => ({ ...s, baseline_mode: "previous_version" }))
+                      }
+                    />
+                    <span>始终与前一版对比</span>
+                  </label>
+                </div>
+              </div>
+
+              <div>
+                <button
+                  onClick={() => setShowThresholds((v) => !v)}
+                  className="flex items-center gap-2 text-sm font-medium text-white hover:text-emerald-400 transition-colors"
+                >
+                  {showThresholds ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                  阈值覆盖（显示默认值）
+                </button>
+                {showThresholds && (
+                  <div className="mt-3 space-y-4 pl-2 border-l-2 border-slate-700">
+                    <div>
+                      <label className="text-sm font-medium text-white block mb-2">
+                        P值阈值
+                        <span className="text-xs text-slate-400 ml-2">
+                          默认: 0.05, 范围: 0.001-0.5
+                        </span>
+                      </label>
+                      <div className="flex items-center gap-3">
+                        <label className="flex items-center gap-2 text-sm text-slate-300">
+                          <input
+                            type="checkbox"
+                            checked={formStrategy.custom_p_value_threshold !== null}
+                            onChange={(e) =>
+                              setFormStrategy((s) => ({
+                                ...s,
+                                custom_p_value_threshold: e.target.checked ? 0.05 : null,
+                              }))
+                            }
+                            className="w-4 h-4 rounded accent-emerald-500"
+                          />
+                          自定义
+                        </label>
+                        <input
+                          type="number"
+                          step={0.001}
+                          min={0.001}
+                          max={0.5}
+                          disabled={formStrategy.custom_p_value_threshold === null}
+                          value={formStrategy.custom_p_value_threshold ?? 0.05}
+                          onChange={(e) => {
+                            const v = parseFloat(e.target.value);
+                            if (!isNaN(v)) {
+                              setFormStrategy((s) => ({
+                                ...s,
+                                custom_p_value_threshold: Math.min(0.5, Math.max(0.001, v)),
+                              }));
+                            }
+                          }}
+                          className="w-32 px-3 py-2 bg-slate-800 border border-slate-600 rounded-lg text-white focus:outline-none focus:border-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="text-sm font-medium text-white block mb-2">
+                        PSI阈值
+                        <span className="text-xs text-slate-400 ml-2">
+                          默认: 0.2, 范围: 0.01-1.0
+                        </span>
+                      </label>
+                      <div className="flex items-center gap-3">
+                        <label className="flex items-center gap-2 text-sm text-slate-300">
+                          <input
+                            type="checkbox"
+                            checked={formStrategy.custom_psi_threshold !== null}
+                            onChange={(e) =>
+                              setFormStrategy((s) => ({
+                                ...s,
+                                custom_psi_threshold: e.target.checked ? 0.2 : null,
+                              }))
+                            }
+                            className="w-4 h-4 rounded accent-emerald-500"
+                          />
+                          自定义
+                        </label>
+                        <input
+                          type="number"
+                          step={0.01}
+                          min={0.01}
+                          max={1.0}
+                          disabled={formStrategy.custom_psi_threshold === null}
+                          value={formStrategy.custom_psi_threshold ?? 0.2}
+                          onChange={(e) => {
+                            const v = parseFloat(e.target.value);
+                            if (!isNaN(v)) {
+                              setFormStrategy((s) => ({
+                                ...s,
+                                custom_psi_threshold: Math.min(1.0, Math.max(0.01, v)),
+                              }));
+                            }
+                          }}
+                          className="w-32 px-3 py-2 bg-slate-800 border border-slate-600 rounded-lg text-white focus:outline-none focus:border-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="text-sm font-medium text-white block mb-2">
+                        漂移比例阈值
+                        <span className="text-xs text-slate-400 ml-2">
+                          默认: 0.2, 范围: 0.01-1.0
+                        </span>
+                      </label>
+                      <div className="flex items-center gap-3">
+                        <label className="flex items-center gap-2 text-sm text-slate-300">
+                          <input
+                            type="checkbox"
+                            checked={formStrategy.custom_drift_ratio_threshold !== null}
+                            onChange={(e) =>
+                              setFormStrategy((s) => ({
+                                ...s,
+                                custom_drift_ratio_threshold: e.target.checked ? 0.2 : null,
+                              }))
+                            }
+                            className="w-4 h-4 rounded accent-emerald-500"
+                          />
+                          自定义
+                        </label>
+                        <input
+                          type="number"
+                          step={0.01}
+                          min={0.01}
+                          max={1.0}
+                          disabled={formStrategy.custom_drift_ratio_threshold === null}
+                          value={formStrategy.custom_drift_ratio_threshold ?? 0.2}
+                          onChange={(e) => {
+                            const v = parseFloat(e.target.value);
+                            if (!isNaN(v)) {
+                              setFormStrategy((s) => ({
+                                ...s,
+                                custom_drift_ratio_threshold: Math.min(1.0, Math.max(0.01, v)),
+                              }));
+                            }
+                          }}
+                          className="w-32 px-3 py-2 bg-slate-800 border border-slate-600 rounded-lg text-white focus:outline-none focus:border-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex items-center gap-3 pt-2 border-t border-slate-700">
+                <button
+                  onClick={handleSaveStrategy}
+                  disabled={savingStrategy}
+                  className="btn-primary flex items-center gap-2"
+                >
+                  {savingStrategy ? (
+                    <Loader2 size={16} className="animate-spin" />
+                  ) : (
+                    <Save size={16} />
+                  )}
+                  保存策略
+                </button>
+                <button
+                  onClick={handleDeleteStrategy}
+                  disabled={deletingStrategy || !strategy?.created_at}
+                  className="btn-secondary flex items-center gap-2 text-red-400 border-red-500/40 hover:bg-red-500/10 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {deletingStrategy ? (
+                    <Loader2 size={16} className="animate-spin" />
+                  ) : (
+                    <Trash2 size={16} />
+                  )}
+                  删除策略
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 

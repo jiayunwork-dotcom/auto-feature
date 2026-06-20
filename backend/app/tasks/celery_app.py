@@ -1,4 +1,5 @@
 from celery import Celery
+from celery.schedules import crontab
 
 from app.core.config import settings
 
@@ -17,6 +18,12 @@ celery_app.conf.update(
     task_track_started=True,
     task_acks_late=True,
     worker_prefetch_multiplier=1,
+    beat_schedule={
+        "auto-compare-poll": {
+            "task": "app.tasks.auto_compare.poll",
+            "schedule": 60.0,
+        },
+    },
 )
 
 celery_app.autodiscover_tasks(["app.tasks"])

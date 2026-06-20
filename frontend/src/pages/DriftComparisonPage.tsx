@@ -1,7 +1,17 @@
 import { useEffect, useState, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { getDriftComparison, getWebSocketUrl } from "@/utils/api";
-import type { DriftComparison as DriftCompType, ColumnDriftResult, DriftWSMessage } from "@/utils/api";
+import {
+  getDriftComparison,
+  getWebSocketUrl,
+  exportDriftReport,
+  getDriftReportDownloadUrl,
+} from "@/utils/api";
+import type {
+  DriftComparison as DriftCompType,
+  ColumnDriftResult,
+  DriftWSMessage,
+  DriftReportExportWSMessage,
+} from "@/utils/api";
 import { useTaskStore } from "@/stores/taskStore";
 import EChartsWrapper from "@/components/EChartsWrapper";
 import {
@@ -20,6 +30,7 @@ import {
   Plus,
   Minus,
   ArrowLeft,
+  FileDown,
 } from "lucide-react";
 
 function statusBadge(status: string) {
@@ -217,6 +228,11 @@ export default function DriftComparisonPage() {
   const [comparison, setComparison] = useState<DriftCompType | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
+  const [exportReady, setExportReady] = useState(false);
+  const [exportDownloadUrl, setExportDownloadUrl] = useState<string | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
+  const exportWsRef = useRef<WebSocket | null>(null);
 
   useEffect(() => {
     if (taskId) {
@@ -270,6 +286,62 @@ export default function DriftComparisonPage() {
       wsRef.current = null;
     };
   }, [comparisonId, taskId, setDriftComparisonProgress, setDriftComparisonStage]);
+
+  const handleExport = async () => {
+    if (!taskId || !comparisonId) return;
+
+    setExporting(true);
+    setExportReady(false);
+    setExportDownloadUrl(null);
+    setExportError(null);
+
+    try {
+      const result = await exportDriftReport(taskId, parseInt(comparisonId));
+      const exportId = result.export_id;
+
+      const ws = new WebSocket(getWebSocketUrl(`/ws/drift-report-export/${exportId}`));
+      exportWsRef.current = ws;
+
+      ws.onmessage = (event) => {
+        try {
+          const msg: DriftReportExportWSMessage = JSON.parse(event.data);
+          if (msg.status === "completed") {
+            setExportReady(true);
+            if (taskId) {
+              setExportDownloadUrl(getDriftReportDownloadUrl(taskId, exportId));
+            }
+            setExporting(false);
+            ws.close();
+          } else if (msg.status === "failed") {
+            setExportError(msg.error_message || "报告导出失败");
+            setExporting(false);
+            ws.close();
+          }
+        } catch {}
+      };
+
+      ws.onclose = () => {
+        exportWsRef.current = null;
+      };
+
+      ws.onerror = () => {
+        setExportError("WebSocket 连接失败");
+        setExporting(false);
+      };
+    } catch (err) {
+      setExportError(err instanceof Error ? err.message : "报告导出失败");
+      setExporting(false);
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      if (exportWsRef.current) {
+        exportWsRef.current.close();
+        exportWsRef.current = null;
+      }
+    };
+  }, []);
 
   if (loading) {
     return (
@@ -334,7 +406,42 @@ export default function DriftComparisonPage() {
             </div>
           </div>
         </div>
-        {statusBadge(comparison.status)}
+        <div className="flex items-center gap-3">
+          {statusBadge(comparison.status)}
+          {comparison.status !== "completed" ? (
+            <button
+              disabled
+              title="对比计算中，完成后可导出"
+              className="btn-secondary flex items-center gap-2 opacity-50 cursor-not-allowed"
+            >
+              <FileDown size={16} />
+              导出PDF报告
+            </button>
+          ) : exporting ? (
+            <button disabled className="btn-secondary flex items-center gap-2">
+              <Loader2 size={16} className="animate-spin" />
+              导出中...
+            </button>
+          ) : exportReady && exportDownloadUrl ? (
+            <a
+              href={exportDownloadUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="btn-primary flex items-center gap-2"
+            >
+              <FileDown size={16} />
+              下载报告
+            </a>
+          ) : (
+            <button
+              onClick={handleExport}
+              className="btn-secondary flex items-center gap-2"
+            >
+              <FileDown size={16} />
+              导出PDF报告
+            </button>
+          )}
+        </div>
       </div>
 
       {comparison.status === "running" && (
@@ -363,6 +470,15 @@ export default function DriftComparisonPage() {
           <div className="flex items-center gap-2">
             <AlertCircle size={20} className="text-red-400" />
             <p className="text-red-300">{comparison.error_message}</p>
+          </div>
+        </div>
+      )}
+
+      {exportError && (
+        <div className="card border-red-500/40">
+          <div className="flex items-center gap-2">
+            <AlertCircle size={20} className="text-red-400" />
+            <p className="text-red-300">{exportError}</p>
           </div>
         </div>
       )}

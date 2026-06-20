@@ -599,3 +599,87 @@ export function acknowledgeDriftWarning(taskId: string, warningId: number): Prom
     method: "POST",
   });
 }
+
+export interface AutoCompareStrategy {
+  task_id: number;
+  is_enabled: boolean;
+  trigger_mode: "on_upload" | "scheduled";
+  baseline_mode: "first_version" | "previous_version";
+  custom_p_value_threshold: number | null;
+  custom_psi_threshold: number | null;
+  custom_drift_ratio_threshold: number | null;
+  poll_interval_minutes: number;
+  last_triggered_at: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export function getAutoCompareStrategy(taskId: string): Promise<AutoCompareStrategy> {
+  return request<AutoCompareStrategy>(`/tasks/${taskId}/auto-compare-strategy`);
+}
+
+export function updateAutoCompareStrategy(
+  taskId: string,
+  data: {
+    is_enabled: boolean;
+    trigger_mode: "on_upload" | "scheduled";
+    baseline_mode: "first_version" | "previous_version";
+    custom_p_value_threshold: number | null;
+    custom_psi_threshold: number | null;
+    custom_drift_ratio_threshold: number | null;
+    poll_interval_minutes: number;
+  }
+): Promise<AutoCompareStrategy> {
+  return request<AutoCompareStrategy>(`/tasks/${taskId}/auto-compare-strategy`, {
+    method: "PUT",
+    body: JSON.stringify(data),
+  });
+}
+
+export function deleteAutoCompareStrategy(taskId: string): Promise<{ message: string }> {
+  return request<{ message: string }>(`/tasks/${taskId}/auto-compare-strategy`, {
+    method: "DELETE",
+  });
+}
+
+export interface DriftReportExport {
+  id: number;
+  task_id: number;
+  comparison_id: number | null;
+  status: "pending" | "running" | "completed" | "failed";
+  file_path: string | null;
+  file_name: string | null;
+  file_size: number | null;
+  error_message: string | null;
+  created_at: string | null;
+  completed_at: string | null;
+}
+
+export interface DriftReportExportWSMessage {
+  status: string;
+  export_id: number;
+  download_url?: string;
+  error_message?: string;
+}
+
+export function exportDriftReport(
+  taskId: string,
+  comparisonId: number
+): Promise<{ export_id: number; status: string }> {
+  return request<{ export_id: number; status: string }>(
+    `/tasks/${taskId}/comparisons/${comparisonId}/export`,
+    { method: "POST" }
+  );
+}
+
+export function getDriftReportExports(taskId: string): Promise<{ exports: DriftReportExport[] }> {
+  return request<{ exports: DriftReportExport[] }>(`/tasks/${taskId}/exports`);
+}
+
+export function getDriftReportExport(taskId: string, exportId: number): Promise<DriftReportExport> {
+  return request<DriftReportExport>(`/tasks/${taskId}/exports/${exportId}`);
+}
+
+export function getDriftReportDownloadUrl(taskId: string, exportId: number): string {
+  return `${BASE_URL}/tasks/${taskId}/exports/${exportId}/download`;
+}
