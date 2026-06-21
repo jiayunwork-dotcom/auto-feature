@@ -781,3 +781,107 @@ export function getFeatureAttribution(
     `/tasks/${taskId}/feature-attribution/${attributionId}`
   );
 }
+
+export interface AttributionListItem {
+  id: number;
+  task_id: number;
+  status: "pending" | "running" | "completed" | "failed";
+  created_at: string | null;
+  completed_at: string | null;
+  error_message: string | null;
+  feature_count: number;
+}
+
+export interface AttributionListResponse {
+  attributions: AttributionListItem[];
+}
+
+export function listFeatureAttributions(
+  taskId: string,
+  status?: string
+): Promise<AttributionListResponse> {
+  const q = status ? `?status=${encodeURIComponent(status)}` : "";
+  return request<AttributionListResponse>(
+    `/tasks/${taskId}/feature-attribution${q}`
+  );
+}
+
+export type ImportanceChangeStatus =
+  | "up"
+  | "down"
+  | "unchanged"
+  | "new"
+  | "removed";
+
+export interface ImportanceChange {
+  feature: string;
+  rank_a: number | null;
+  rank_b: number | null;
+  rank_delta: number | null;
+  value_a: number;
+  value_b: number;
+  value_change_pct: number | null;
+  status: ImportanceChangeStatus;
+  highlight: boolean;
+}
+
+export type InteractionChangeStatus = "common" | "new" | "removed";
+export type InteractionDirection = "up" | "down" | "same" | null;
+
+export interface InteractionChange {
+  feature_a: string;
+  feature_b: string;
+  strength_a: number | null;
+  strength_b: number | null;
+  change_pct: number | null;
+  direction: InteractionDirection;
+  status: InteractionChangeStatus;
+}
+
+export interface DAGDiffEdge {
+  source: string;
+  target: string;
+  operation?: string;
+}
+
+export interface DAGDiff {
+  feature: string;
+  has_diff: boolean;
+  note?: string;
+  tree_a: DAGTreeNode | null;
+  tree_b: DAGTreeNode | null;
+  added_edges: DAGDiffEdge[];
+  removed_edges: DAGDiffEdge[];
+}
+
+export interface AttributionCompareMeta {
+  id: number;
+  created_at: string | null;
+  completed_at?: string | null;
+  feature_count: number;
+}
+
+export interface AttributionCompareResult {
+  no_intersection: boolean;
+  message?: string;
+  attribution_a: AttributionCompareMeta;
+  attribution_b: AttributionCompareMeta;
+  importance_changes?: ImportanceChange[];
+  interaction_changes?: InteractionChange[];
+  dag_diffs?: DAGDiff[];
+}
+
+export function compareFeatureAttributions(
+  taskId: string,
+  attributionIdA: number,
+  attributionIdB: number
+): Promise<AttributionCompareResult> {
+  const params = new URLSearchParams({
+    attribution_id_a: String(attributionIdA),
+    attribution_id_b: String(attributionIdB),
+  });
+  return request<AttributionCompareResult>(
+    `/tasks/${taskId}/feature-attribution/compare?${params.toString()}`,
+    { method: "POST" }
+  );
+}
