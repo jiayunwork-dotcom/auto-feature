@@ -72,6 +72,7 @@ class FeatureEngineeringLog(Base):
     original_features: Mapped[int | None] = mapped_column(Integer, nullable=True)
     transformed_features: Mapped[int | None] = mapped_column(Integer, nullable=True)
     contribution_by_type: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    feature_lineage: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     config: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     task = relationship("Task", back_populates="feature_engineering_logs")

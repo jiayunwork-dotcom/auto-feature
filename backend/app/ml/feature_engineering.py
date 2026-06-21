@@ -17,6 +17,13 @@ class FeatureEngineer:
         self.max_dates_: dict[str, pd.Timestamp] = {}
         self.top_k_pairs_: list[tuple[str, str]] = []
         self.top_5_pairs_: list[tuple[str, str]] = []
+        self.feature_lineage_: dict[str, dict] = {}
+
+    def _record_lineage(self, feature_name: str, parents: list[str], operation: str) -> None:
+        self.feature_lineage_[feature_name] = {
+            "parents": list(parents),
+            "operation": operation,
+        }
 
     def fit_transform(
         self,
@@ -24,6 +31,7 @@ class FeatureEngineer:
         column_types: dict[str, str],
         target_column: str,
     ) -> tuple[pd.DataFrame, dict]:
+        self.feature_lineage_ = {}
         original_features = len(df.columns)
         contribution_by_type: dict[str, int] = {}
         result_parts: list[pd.DataFrame] = []
@@ -94,6 +102,7 @@ class FeatureEngineer:
             "original_features": original_features,
             "transformed_features": transformed_df.shape[1],
             "contribution_by_type": contribution_by_type,
+            "feature_lineage": dict(self.feature_lineage_),
         }
 
         return transformed_df, metadata
@@ -120,11 +129,13 @@ class FeatureEngineer:
         for i in range(len(top_cols)):
             for j in range(i + 1, len(top_cols)):
                 self.top_k_pairs_.append((top_cols[i], top_cols[j]))
-                poly_result[f"{top_cols[i]}_x_{top_cols[j]}"] = (
-                    df[top_cols[i]] * df[top_cols[j]]
-                )
+                fname = f"{top_cols[i]}_x_{top_cols[j]}"
+                poly_result[fname] = df[top_cols[i]] * df[top_cols[j]]
+                self._record_lineage(fname, [top_cols[i], top_cols[j]], "multiply")
         for col in top_cols:
-            poly_result[f"{col}_sq"] = df[col] ** 2
+            fname = f"{col}_sq"
+            poly_result[fname] = df[col] ** 2
+            self._record_lineage(fname, [col], "square")
         parts.append(poly_result)
 
         bins_list = self.config.get("bin_counts", [5, 10, 20])
@@ -132,9 +143,11 @@ class FeatureEngineer:
         for col in numeric_cols:
             for n_bins in bins_list:
                 try:
-                    bin_result[f"{col}_bin{n_bins}"] = pd.qcut(
+                    fname = f"{col}_bin{n_bins}"
+                    bin_result[fname] = pd.qcut(
                         df[col], q=n_bins, labels=False, duplicates="drop"
                     )
+                    self._record_lineage(fname, [col], f"quantile_bin_{n_bins}")
                 except (ValueError, TypeError):
                     pass
         parts.append(bin_result)
@@ -142,7 +155,9 @@ class FeatureEngineer:
         log_result = pd.DataFrame(index=df.index)
         for col in numeric_cols:
             if (df[col] > 0).all():
-                log_result[f"{col}_log1p"] = np.log1p(df[col])
+                fname = f"{col}_log1p"
+                log_result[fname] = np.log1p(df[col])
+                self._record_lineage(fname, [col], "log1p")
         parts.append(log_result)
 
         self.scaler = StandardScaler()
@@ -150,6 +165,8 @@ class FeatureEngineer:
         scaled_df = pd.DataFrame(
             scaled_array, columns=[f"{c}_zscore" for c in numeric_cols], index=df.index
         )
+        for col in numeric_cols:
+            self._record_lineage(f"{col}_zscore", [col], "zscore_standardize")
         parts.append(scaled_df)
 
         self.top_5_pairs_ = self.top_k_pairs_[:5]
@@ -175,6 +192,11 @@ class FeatureEngineer:
 
         if one_hot_cols:
             dummies = pd.get_dummies(df[one_hot_cols], dummy_na=False)
+            for col in one_hot_cols:
+                col_prefix = col
+                for col_name in dummies.columns:
+                    if col_name.startswith(f"{col_prefix}_"):
+                        self._record_lineage(col_name, [col], "one_hot_encode")
             parts.append(dummies)
 
         if target_enc_cols and target_column in df.columns:
@@ -185,7 +207,9 @@ class FeatureEngineer:
         for col in categorical_cols:
             freq_map = df[col].value_counts(normalize=True).to_dict()
             self.freq_encoding_maps_[col] = freq_map
-            freq_result[f"{col}_freq"] = df[col].map(freq_map).fillna(0)
+            fname = f"{col}_freq"
+            freq_result[fname] = df[col].map(freq_map).fillna(0)
+            self._record_lineage(fname, [col], "frequency_encode")
         parts.append(freq_result)
 
         return pd.concat(parts, axis=1) if parts else pd.DataFrame(index=df.index)
@@ -213,7 +237,9 @@ class FeatureEngineer:
                 encoded.iloc[val_idx] = df.iloc[val_idx][col].map(means)
 
             encoded = encoded.fillna(global_mean)
-            result[f"{col}_target_enc"] = encoded
+            fname = f"{col}_target_enc"
+            result[fname] = encoded
+            self._record_lineage(fname, [col], "target_encode")
 
         return result
 
@@ -229,19 +255,28 @@ class FeatureEngineer:
             self.max_dates_[col] = dt_series.max()
 
             dt_result = pd.DataFrame(index=df.index)
-            dt_result[f"{col}_year"] = dt_series.dt.year
-            dt_result[f"{col}_month"] = dt_series.dt.month
-            dt_result[f"{col}_day"] = dt_series.dt.day
-            dt_result[f"{col}_dayofweek"] = dt_series.dt.dayofweek
-            dt_result[f"{col}_is_weekend"] = (dt_series.dt.dayofweek >= 5).astype(int)
-            dt_result[f"{col}_weekofyear"] = dt_series.dt.isocalendar().week.astype(int)
+            for part_name, part_values in [
+                ("year", dt_series.dt.year),
+                ("month", dt_series.dt.month),
+                ("day", dt_series.dt.day),
+                ("dayofweek", dt_series.dt.dayofweek),
+                ("is_weekend", (dt_series.dt.dayofweek >= 5).astype(int)),
+                ("weekofyear", dt_series.dt.isocalendar().week.astype(int)),
+            ]:
+                fname = f"{col}_{part_name}"
+                dt_result[fname] = part_values
+                self._record_lineage(fname, [col], f"extract_{part_name}")
 
             if dt_series.dt.hour.nunique(dropna=True) > 1:
-                dt_result[f"{col}_hour"] = dt_series.dt.hour
+                fname = f"{col}_hour"
+                dt_result[fname] = dt_series.dt.hour
+                self._record_lineage(fname, [col], "extract_hour")
 
             max_date = self.max_dates_[col]
             if pd.notna(max_date):
-                dt_result[f"{col}_days_from_max"] = (max_date - dt_series).dt.days
+                fname = f"{col}_days_from_max"
+                dt_result[fname] = (max_date - dt_series).dt.days
+                self._record_lineage(fname, [col], "days_from_max_date")
 
             parts.append(dt_result)
 
@@ -262,6 +297,9 @@ class FeatureEngineer:
             self.tfidf_vectorizers_[col] = vectorizer
 
             feature_names = [f"{col}_tfidf_{i}" for i in range(tfidf_matrix.shape[1])]
+            for fname in feature_names:
+                self._record_lineage(fname, [col], "tfidf_vectorizer")
+
             tfidf_df = pd.DataFrame(
                 tfidf_matrix.toarray(),
                 columns=feature_names,
@@ -275,5 +313,7 @@ class FeatureEngineer:
         result = pd.DataFrame(index=df.index)
         for col_a, col_b in self.top_5_pairs_:
             ratio = np.where(df[col_b] != 0, df[col_a] / df[col_b], 0)
-            result[f"{col_a}_div_{col_b}"] = ratio
+            fname = f"{col_a}_div_{col_b}"
+            result[fname] = ratio
+            self._record_lineage(fname, [col_a, col_b], "divide")
         return result

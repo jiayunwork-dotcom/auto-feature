@@ -108,6 +108,7 @@ def feature_engineering_task(self, task_id: int):
                 original_features=metadata["original_features"],
                 transformed_features=metadata["transformed_features"],
                 contribution_by_type=metadata["contribution_by_type"],
+                feature_lineage=metadata.get("feature_lineage"),
                 config=config,
             )
             session.add(log_entry)
@@ -849,52 +850,39 @@ def trigger_auto_compare_on_upload(task_id: int, new_version_id: int):
         drift_comparison_task.delay(comparison.id)
 
 
-def _parse_feature_origin(feature_name: str, original_columns: list[str]) -> dict:
-    for orig_col in original_columns:
-        if feature_name == orig_col:
-            return {"type": "original", "source": orig_col, "parents": [orig_col]}
+def _get_feature_lineage_from_db(session, task_id: int) -> dict:
+    log_entry = (
+        session.query(FeatureEngineeringLog)
+        .filter(FeatureEngineeringLog.task_id == task_id)
+        .order_by(FeatureEngineeringLog.id.desc())
+        .first()
+    )
+    if log_entry and log_entry.feature_lineage and isinstance(log_entry.feature_lineage, dict):
+        return log_entry.feature_lineage
+    return {}
 
-    for orig_col in original_columns:
-        if feature_name == f"{orig_col}_sq":
-            return {"type": "polynomial_square", "source": orig_col, "parents": [orig_col], "operation": "square"}
-        if feature_name == f"{orig_col}_log1p":
-            return {"type": "log_transform", "source": orig_col, "parents": [orig_col], "operation": "log1p"}
-        if feature_name == f"{orig_col}_zscore":
-            return {"type": "standardization", "source": orig_col, "parents": [orig_col], "operation": "z-score"}
-        if feature_name == f"{orig_col}_target_enc":
-            return {"type": "target_encoding", "source": orig_col, "parents": [orig_col], "operation": "target_encode"}
-        if feature_name == f"{orig_col}_freq":
-            return {"type": "frequency_encoding", "source": orig_col, "parents": [orig_col], "operation": "frequency"}
-        if feature_name.startswith(f"{orig_col}_bin"):
-            return {"type": "binning", "source": orig_col, "parents": [orig_col], "operation": "quantile_bin"}
-        if feature_name in [f"{orig_col}_year", f"{orig_col}_month", f"{orig_col}_day",
-                            f"{orig_col}_dayofweek", f"{orig_col}_is_weekend",
-                            f"{orig_col}_weekofyear", f"{orig_col}_hour", f"{orig_col}_days_from_max"]:
-            part = feature_name[len(orig_col) + 1:]
-            return {"type": "datetime_extract", "source": orig_col, "parents": [orig_col], "operation": f"extract_{part}"}
-        if feature_name.startswith(f"{orig_col}_tfidf_"):
-            return {"type": "tfidf", "source": orig_col, "parents": [orig_col], "operation": "tfidf_vectorizer"}
-        if feature_name.startswith(f"{orig_col}_"):
-            suffix = feature_name[len(orig_col) + 1:]
-            if not any(c.isdigit() for c in suffix) and "_" not in suffix:
-                return {"type": "one_hot", "source": orig_col, "parents": [orig_col], "operation": f"one_hot[{suffix}]"}
 
-    for orig_a in original_columns:
-        for orig_b in original_columns:
-            if orig_a >= orig_b:
-                continue
-            if feature_name == f"{orig_a}_x_{orig_b}":
-                return {"type": "cross_multiply", "source": None, "parents": [orig_a, orig_b], "operation": "multiply"}
-            if feature_name == f"{orig_a}_div_{orig_b}":
-                return {"type": "cross_divide", "source": None, "parents": [orig_a, orig_b], "operation": "divide"}
-
-    return {"type": "unknown", "source": None, "parents": [], "operation": "unknown"}
+def _resolve_original_shap(
+    original_col: str,
+    feature_shap_means: dict[str, float],
+    feature_lineage: dict,
+) -> float:
+    if original_col in feature_shap_means:
+        return abs(feature_shap_means[original_col])
+    total = 0.0
+    for feat, info in feature_lineage.items():
+        if feat in feature_shap_means:
+            parents = info.get("parents", []) if isinstance(info, dict) else []
+            if original_col in parents:
+                total += abs(feature_shap_means[feat])
+    return total
 
 
 def _build_feature_dag(
     selected_features: list[str],
     original_columns: list[str],
     feature_shap_means: dict[str, float],
+    feature_lineage: dict,
 ) -> dict:
     nodes: list[dict] = []
     edges: list[dict] = []
@@ -914,24 +902,54 @@ def _build_feature_dag(
             edge["weight"] = weight
         edges.append(edge)
 
+    def _lookup_lineage(feat: str) -> dict | None:
+        if feat in feature_lineage and isinstance(feature_lineage[feat], dict):
+            return feature_lineage[feat]
+        return None
+
+    tree_data: dict[str, dict] = {}
+
     for feat in selected_features:
         feat_shap_val = abs(feature_shap_means.get(feat, 0.0))
         _add_node(feat, "selected_feature", feat, weight=feat_shap_val)
 
-        origin = _parse_feature_origin(feat, original_columns)
-        parents = origin.get("parents", [])
-        operation = origin.get("operation", "transform")
+        lineage = _lookup_lineage(feat)
+        if lineage:
+            parents = list(lineage.get("parents", []))
+            operation = str(lineage.get("operation", "transform"))
+        else:
+            if feat in original_columns:
+                parents = [feat]
+                operation = "original"
+            else:
+                parents = []
+                operation = "unknown"
 
         if len(parents) == 1:
             parent = parents[0]
             _add_node(parent, "original", parent)
             _add_edge(parent, feat, operation)
+            tree_data[feat] = {
+                "name": feat,
+                "type": "selected_feature",
+                "operation": operation,
+                "shap_importance": feat_shap_val,
+                "children": [
+                    {
+                        "name": parent,
+                        "type": "original",
+                        "contribution_weight": 1.0,
+                    }
+                ],
+            }
         elif len(parents) > 1:
-            total_shap = feat_shap_val
-            if total_shap > 0:
-                parent_shaps = [abs(feature_shap_means.get(p, 0.0)) for p in parents]
-                parent_sum = sum(parent_shaps) if sum(parent_shaps) > 0 else len(parents)
-                weights = [s / parent_sum for s in parent_shaps]
+            parent_contribs = [
+                _resolve_original_shap(p, feature_shap_means, feature_lineage)
+                for p in parents
+            ]
+            contrib_sum = sum(parent_contribs)
+            if contrib_sum > 0:
+                weights = [c / contrib_sum for c in parent_contribs]
             else:
                 weights = [1.0 / len(parents) for _ in parents]
 
@@ -939,42 +957,29 @@ def _build_feature_dag(
                 _add_node(parent, "original", parent)
                 _add_edge(parent, feat, operation, weight=weights[i])
 
-    tree_data: dict[str, dict] = {}
-    for feat in selected_features:
-        origin = _parse_feature_origin(feat, original_columns)
-        parents = origin.get("parents", [])
-        feat_shap_val = abs(feature_shap_means.get(feat, 0.0))
-
-        children = []
-        if len(parents) > 1:
-            total_shap = feat_shap_val
-            if total_shap > 0:
-                parent_shaps = [abs(feature_shap_means.get(p, 0.0)) for p in parents]
-                parent_sum = sum(parent_shaps) if sum(parent_shaps) > 0 else len(parents)
-                weights = [s / parent_sum for s in parent_shaps]
-            else:
-                weights = [1.0 / len(parents) for _ in parents]
-
-            for i, p in enumerate(parents):
-                children.append({
-                    "name": p,
+            children = [
+                {
+                    "name": parents[i],
                     "type": "original",
                     "contribution_weight": weights[i],
-                })
-        elif len(parents) == 1:
-            children.append({
-                "name": parents[0],
-                "type": "original",
-                "contribution_weight": 1.0,
-            })
-
-        tree_data[feat] = {
-            "name": feat,
-            "type": "selected_feature",
-            "operation": origin.get("operation", "transform"),
-            "shap_importance": feat_shap_val,
-            "children": children,
-        }
+                }
+                for i in range(len(parents))
+            ]
+            tree_data[feat] = {
+                "name": feat,
+                "type": "selected_feature",
+                "operation": operation,
+                "shap_importance": feat_shap_val,
+                "children": children,
+            }
+        else:
+            tree_data[feat] = {
+                "name": feat,
+                "type": "selected_feature",
+                "operation": operation,
+                "shap_importance": feat_shap_val,
+                "children": [],
+            }
 
     return {
         "nodes": nodes,
@@ -1197,8 +1202,10 @@ def feature_attribution_task(self, task_id: int):
             ).all()
             original_columns = [c.column_name for c in cols if c.column_name != task.target_column]
 
+            feature_lineage = _get_feature_lineage_from_db(session, task_id)
+
             feature_shap_means = {fname: float(shap_abs_mean[j]) for j, fname in enumerate(feature_names)}
-            dag_result = _build_feature_dag(selected_features, original_columns, feature_shap_means)
+            dag_result = _build_feature_dag(selected_features, original_columns, feature_shap_means, feature_lineage)
 
             attribution_record = session.get(FeatureAttribution, attribution_id)
             attribution_record.shap_values = shap_values_result
